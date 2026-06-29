@@ -1,0 +1,1100 @@
+import { useMemo, useState } from "react";
+import { useNavigate } from "react-router-dom";
+import { useAction, useMutation, useQuery } from "convex/react";
+import {
+  Truck, Plus, Check, MapPin, User,
+  ChevronDown, ChevronRight, Printer, Loader2,
+  Calendar, X, AlertCircle, Route, Copy, Navigation, Trash2,
+} from "lucide-react";
+import { api } from "../../../convex/_generated/api";
+import type { Id } from "../../../convex/_generated/dataModel";
+import { UnderlineTabs } from "../../components/ui/UnderlineTabs";
+
+type Tab = "planification" | "historique";
+type OptimizeFeedback = {
+  stopCount: number;
+  distanceMeters: number;
+  durationSeconds: number;
+};
+
+const STATUS_STYLE: Record<string, string> = {
+  planifiee: "bg-sky-500/15 text-sky-300",
+  en_cours: "bg-amber-500/15 text-amber-300",
+  terminee: "bg-emerald-500/15 text-emerald-400",
+  annulee: "bg-zinc-700 text-zinc-400",
+};
+const STATUS_LABELS: Record<string, string> = {
+  planifiee: "Planifiée",
+  en_cours: "En cours",
+  terminee: "Terminée",
+  annulee: "Annulée",
+};
+
+const MAPBOX_PUBLIC_TOKEN = import.meta.env.VITE_MAPBOX_ACCESS_TOKEN;
+const TOURNEE_DEPOT_ADDRESS = "4 rue de la prairie 60650 Lachapelle-aux-Pots";
+
+function formatTourneeLabel(dateInput: string) {
+  const date = new Date(`${dateInput}T12:00:00`);
+  const formatter = new Intl.DateTimeFormat("fr-FR", {
+    day: "2-digit",
+    month: "2-digit",
+    year: "2-digit",
+  });
+  return `Tournée ${formatter.format(date)}`;
+}
+
+function formatDistance(distanceMeters?: number) {
+  if (!distanceMeters) return null;
+  return `${(distanceMeters / 1000).toFixed(1).replace(".", ",")} km`;
+}
+
+function formatDuration(durationSeconds?: number) {
+  if (!durationSeconds) return null;
+  const totalMinutes = Math.max(1, Math.round(durationSeconds / 60));
+  const hours = Math.floor(totalMinutes / 60);
+  const minutes = totalMinutes % 60;
+  if (hours === 0) return `${totalMinutes} min`;
+  if (minutes === 0) return `${hours} h`;
+  return `${hours} h ${minutes.toString().padStart(2, "0")}`;
+}
+
+function buildTrackingShareUrl(token: string) {
+  if (typeof window === "undefined") return `/suivi/${token}`;
+  return `${window.location.origin}/suivi/${token}`;
+}
+
+function normalizeTrackingText(value?: string) {
+  return (value ?? "").trim().toLowerCase();
+}
+
+function stopTrackingKey(stop: {
+  requestId?: string;
+  address: string;
+  contactName?: string;
+}) {
+  return (
+    stop.requestId ??
+    `${normalizeTrackingText(stop.address)}::${normalizeTrackingText(stop.contactName)}`
+  );
+}
+
+function buildTourneeMapPreviewUrl(
+  stops: Array<{ address: string; longitude?: number; latitude?: number; order: number }>,
+) {
+  if (!MAPBOX_PUBLIC_TOKEN) return null;
+
+  const coordinates = stops
+    .filter((stop) => typeof stop.longitude === "number" && typeof stop.latitude === "number")
+    .sort((a, b) => a.order - b.order);
+
+  if (coordinates.length < 2) return null;
+
+  const features = coordinates.flatMap((stop, index) => {
+    const point = {
+      type: "Feature",
+      properties: {
+        "marker-color": index === 0 ? "#f97316" : index === coordinates.length - 1 ? "#0f766e" : "#f1104f",
+        "marker-size": "small",
+        "marker-symbol": `${Math.min(index + 1, 99)}`,
+      },
+      geometry: {
+        type: "Point",
+        coordinates: [stop.longitude, stop.latitude],
+      },
+    };
+
+    if (index === 0) {
+      return [point];
+    }
+
+    const previous = coordinates[index - 1];
+    return [
+      {
+        type: "Feature",
+        properties: {
+          stroke: "#f1104f",
+          "stroke-width": 4,
+          "stroke-opacity": 0.8,
+        },
+        geometry: {
+          type: "LineString",
+          coordinates: [
+            [previous.longitude, previous.latitude],
+            [stop.longitude, stop.latitude],
+          ],
+        },
+      },
+      point,
+    ];
+  });
+
+  const geojson = encodeURIComponent(
+    JSON.stringify({
+      type: "FeatureCollection",
+      features,
+    }),
+  );
+
+  return `https://api.mapbox.com/styles/v1/mapbox/light-v11/static/geojson(${geojson})/auto/980x420?padding=48&access_token=${MAPBOX_PUBLIC_TOKEN}`;
+}
+
+export function Tournees() {
+  const [tab, setTab] = useState<Tab>("planification");
+
+  return (
+    <div className="min-h-screen p-4 sm:p-6 lg:p-8">
+      <div className="mb-6">
+        <p className="text-xs font-semibold uppercase tracking-[0.18em] text-zinc-500">Tournées</p>
+        <h1 className="mt-1 text-2xl font-bold text-zinc-100">Tournées de collecte</h1>
+        <p className="mt-1 text-sm text-zinc-500">
+          Planifiez les passages à domicile et suivez leur avancement en temps réel.
+        </p>
+      </div>
+
+      <UnderlineTabs
+        className="mb-6"
+        items={[
+          { key: "planification", label: "À venir" },
+          { key: "historique", label: "Historique" },
+        ]}
+        value={tab}
+        onChange={setTab}
+      />
+
+      {tab === "planification" ? <PlanificationTab /> : <HistoriqueTab />}
+    </div>
+  );
+}
+
+// ─── Planification ────────────────────────────────────────────────────────────
+
+function PlanificationTab() {
+  const navigate = useNavigate();
+  const [showForm, setShowForm] = useState(false);
+  const { start, end } = useMemo(() => {
+    const now = Date.now();
+    return {
+      start: now - 1 * 86400000,
+      end: now + 60 * 86400000,
+    };
+  }, []);
+
+  const tournees = useQuery(api.sorties.listTournees, { startDate: start, endDate: end });
+  const teamMembers = useQuery(api.team.list, {});
+  const updateStatus = useMutation(api.sorties.updateTourneeStatus);
+  const updateStop = useMutation(api.sorties.updateTourneeStop);
+  const deleteTournee = useMutation(api.sorties.deleteTournee);
+  const optimizeTournee = useAction(api.sorties.optimizeTournee);
+  const [expanded, setExpanded] = useState<string | null>(null);
+  const [optimizingId, setOptimizingId] = useState<string | null>(null);
+  const [deletingId, setDeletingId] = useState<string | null>(null);
+  const [optimizeErrorById, setOptimizeErrorById] = useState<Record<string, string>>({});
+  const [optimizeSuccessById, setOptimizeSuccessById] = useState<Record<string, OptimizeFeedback>>({});
+  const [copiedToken, setCopiedToken] = useState<string | null>(null);
+
+  const active = tournees?.filter((t) => t.status !== "terminee" && t.status !== "annulee") ?? [];
+  const trackingLinksGroups = useQuery(
+    api.sorties.listTrackingLinksByTournees,
+    active.length > 0
+      ? { tourneeIds: active.map((tournee) => tournee._id as Id<"tournees">) }
+      : "skip",
+  );
+  const trackingLinksByTourId = useMemo(
+    () =>
+      Object.fromEntries(
+        (trackingLinksGroups ?? []).map((group) => [group.tourneeId, group.links]),
+      ) as Record<
+        string,
+        Array<{
+          _id: string;
+          shareToken: string;
+          stopOrder: number;
+          requestId?: string;
+          contactName?: string;
+          address: string;
+        }>
+      >,
+    [trackingLinksGroups],
+  );
+
+  async function copyShareLink(token: string) {
+    await navigator.clipboard.writeText(buildTrackingShareUrl(token));
+    setCopiedToken(token);
+    window.setTimeout(() => setCopiedToken((c) => (c === token ? null : c)), 2000);
+  }
+
+  async function handleDeleteTournee(tourneeId: Id<"tournees">, label: string) {
+    const confirmed = window.confirm(
+      `Supprimer définitivement "${label}" ? Les liens de suivi et la position live associés seront aussi supprimés.`,
+    );
+    if (!confirmed) return;
+    setDeletingId(tourneeId);
+    try {
+      await deleteTournee({ tourneeId });
+      setExpanded((current) => (current === tourneeId ? null : current));
+    } finally {
+      setDeletingId((current) => (current === tourneeId ? null : current));
+    }
+  }
+
+  return (
+    <div className="space-y-5">
+      <button
+        type="button"
+        onClick={() => setShowForm(!showForm)}
+        className="flex items-center gap-2 rounded-xl bg-brand-500 px-4 py-2.5 text-sm font-bold text-white shadow-[0_4px_14px_rgba(241,16,79,0.3)] transition hover:opacity-90"
+      >
+        {showForm ? <X className="h-4 w-4" /> : <Plus className="h-4 w-4" />}
+        {showForm ? "Annuler" : "Nouvelle tournée"}
+      </button>
+
+      {showForm && (
+        <TourneeForm
+          teamMembers={teamMembers ?? []}
+          onClose={() => setShowForm(false)}
+        />
+      )}
+
+      {tournees === undefined ? (
+        <div className="flex items-center gap-3 rounded-xl border border-[var(--crm-border)] bg-[var(--crm-surface)] px-5 py-8 text-sm text-zinc-500">
+          <Loader2 className="h-4 w-4 animate-spin" />
+          Chargement…
+        </div>
+      ) : active.length === 0 ? (
+        <div className="rounded-2xl border border-dashed border-[var(--crm-border)] bg-[var(--crm-surface)] p-12 text-center">
+          <Truck className="mx-auto h-10 w-10 text-zinc-600 mb-3" />
+          <p className="text-zinc-300 font-semibold">Aucune tournée à venir</p>
+          <p className="text-zinc-500 text-sm mt-1">
+            Créez une tournée pour planifier vos prochaines collectes à domicile.
+          </p>
+        </div>
+      ) : (
+        <div className="space-y-3">
+          {active.map((t) => {
+            const isOpen = expanded === t._id;
+            const doneStops = t.stops.filter((s) => s.status === "effectue").length;
+            const totalStops = t.stops.length;
+            const mapPreviewUrl = buildTourneeMapPreviewUrl(t.stops);
+            const trackingLinks = trackingLinksByTourId[t._id] ?? [];
+            const tokenByStopKey = new Map(
+              trackingLinks.map((link) => [stopTrackingKey(link), link.shareToken]),
+            );
+            const tokenByOrder = new Map(
+              trackingLinks.map((link) => [link.stopOrder, link.shareToken]),
+            );
+            return (
+              <div
+                key={t._id}
+                className="rounded-xl border border-[var(--crm-border)] bg-[var(--crm-surface)] overflow-hidden"
+              >
+                {/* Header */}
+                <button
+                  type="button"
+                  onClick={() => setExpanded(isOpen ? null : t._id)}
+                  className="flex w-full items-center gap-4 px-5 py-4 text-left hover:bg-[var(--crm-surface-2)] transition"
+                >
+                  <div className="min-w-0 flex-1">
+                    <div className="flex items-center gap-2 mb-0.5">
+                      <span className={`rounded-full px-2 py-0.5 text-[10px] font-semibold ${STATUS_STYLE[t.status]}`}>
+                        {STATUS_LABELS[t.status]}
+                      </span>
+                      <span className="text-xs text-zinc-500">
+                        {new Date(t.date).toLocaleDateString("fr-FR", {
+                          weekday: "long", day: "numeric", month: "long",
+                        })}
+                      </span>
+                    </div>
+                    <p className="text-sm font-semibold text-zinc-100">{t.label}</p>
+                    <p className="text-xs text-zinc-500">
+                      {totalStops} passage{totalStops > 1 ? "s" : ""}
+                      {doneStops > 0 && ` · ${doneStops}/${totalStops} effectué${doneStops > 1 ? "s" : ""}`}
+                      {t.driverName && ` · ${t.driverName}`}
+                      {t.vehicleName && ` · 🚚 ${t.vehicleName}`}
+                    </p>
+                  </div>
+                  {totalStops > 0 && t.status === "en_cours" && (
+                    <div className="shrink-0 mr-2">
+                      <div className="h-1.5 w-24 rounded-full bg-[var(--crm-surface-3)] overflow-hidden">
+                        <div
+                          className="h-full rounded-full bg-emerald-500 transition-all"
+                          style={{ width: `${(doneStops / totalStops) * 100}%` }}
+                        />
+                      </div>
+                    </div>
+                  )}
+                  {isOpen ? (
+                    <ChevronDown className="h-4 w-4 text-zinc-500 shrink-0" />
+                  ) : (
+                    <ChevronRight className="h-4 w-4 text-zinc-500 shrink-0" />
+                  )}
+                </button>
+
+                {isOpen && (
+                  <div className="border-t border-[var(--crm-border)]">
+                    {/* Actions */}
+                    <div className="flex flex-wrap items-center gap-2 px-5 py-3 bg-[var(--crm-surface-2)]">
+                      <button
+                        type="button"
+                        onClick={async () => {
+                          setOptimizingId(t._id);
+                          setOptimizeErrorById((current) => {
+                            const next = { ...current };
+                            delete next[t._id];
+                            return next;
+                          });
+                          setOptimizeSuccessById((current) => {
+                            const next = { ...current };
+                            delete next[t._id];
+                            return next;
+                          });
+                          try {
+                            const result = await optimizeTournee({
+                              tourneeId: t._id as Id<"tournees">,
+                            });
+                            setOptimizeSuccessById((current) => ({
+                              ...current,
+                              [t._id]: result,
+                            }));
+                          } catch (error) {
+                            setOptimizeErrorById((current) => ({
+                              ...current,
+                              [t._id]:
+                                error instanceof Error
+                                  ? error.message
+                                  : "Optimisation impossible.",
+                            }));
+                          } finally {
+                            setOptimizingId((current) =>
+                              current === t._id ? null : current,
+                            );
+                          }
+                        }}
+                        disabled={optimizingId === t._id || t.stops.length < 3}
+                        className="rounded-xl bg-sky-500/20 px-3 py-1.5 text-xs font-bold text-sky-300 transition hover:bg-sky-500/30 disabled:cursor-not-allowed disabled:opacity-50"
+                        title={
+                          t.stops.length < 3
+                            ? "Au moins 3 arrêts sont nécessaires pour optimiser."
+                            : "Optimiser l'ordre des arrêts avec Mapbox."
+                        }
+                      >
+                        {optimizingId === t._id ? (
+                          <span className="inline-flex items-center gap-1.5">
+                            <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                            Optimisation…
+                          </span>
+                        ) : (
+                          <span className="inline-flex items-center gap-1.5">
+                            <Route className="h-3.5 w-3.5" />
+                            Optimiser{t.stops.length < 3 ? ` (${t.stops.length}/3)` : ""}
+                          </span>
+                        )}
+                      </button>
+                      {t.status === "planifiee" && (
+                        <button
+                          type="button"
+                          onClick={async () => {
+                            await updateStatus({
+                              tourneeId: t._id as Id<"tournees">,
+                              status: "en_cours",
+                            });
+                            navigate(`/crm/conduite/${t._id}`);
+                          }}
+                          className="rounded-xl bg-amber-500/20 px-3 py-1.5 text-xs font-bold text-amber-300 hover:bg-amber-500/30 transition"
+                        >
+                          Démarrer
+                        </button>
+                      )}
+                      {t.status === "en_cours" && (
+                        <button
+                          type="button"
+                          onClick={() => navigate(`/crm/conduite/${t._id}`)}
+                          className="rounded-xl bg-brand-500 px-3 py-1.5 text-xs font-bold text-white shadow-[0_4px_14px_rgba(241,16,79,0.3)] transition hover:opacity-90"
+                        >
+                          <span className="inline-flex items-center gap-1.5">
+                            <Navigation className="h-3.5 w-3.5" />
+                            Mode conduite
+                          </span>
+                        </button>
+                      )}
+                      {t.status === "en_cours" && (
+                        <button
+                          type="button"
+                          onClick={() =>
+                            updateStatus({ tourneeId: t._id as Id<"tournees">, status: "terminee" })
+                          }
+                          className="rounded-xl bg-emerald-500/20 px-3 py-1.5 text-xs font-bold text-emerald-300 hover:bg-emerald-500/30 transition"
+                        >
+                          Terminer
+                        </button>
+                      )}
+                      <button
+                        type="button"
+                        onClick={() => window.print()}
+                        className="flex items-center gap-1.5 rounded-lg border border-[var(--crm-border)] px-3 py-1.5 text-xs text-zinc-400 hover:text-zinc-200 transition sm:ml-auto"
+                      >
+                        <Printer className="h-3.5 w-3.5" />
+                        Feuille de route
+                      </button>
+                      <button
+                        type="button"
+                        disabled={deletingId === t._id}
+                        onClick={() => handleDeleteTournee(t._id as Id<"tournees">, t.label)}
+                        className="flex items-center gap-1.5 rounded-lg border border-red-500/25 bg-red-500/10 px-3 py-1.5 text-xs font-semibold text-red-300 transition hover:bg-red-500/20 disabled:cursor-not-allowed disabled:opacity-50"
+                      >
+                        {deletingId === t._id ? (
+                          <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                        ) : (
+                          <Trash2 className="h-3.5 w-3.5" />
+                        )}
+                        Supprimer
+                      </button>
+                    </div>
+                    {optimizeSuccessById[t._id] && (
+                      <div className="mx-5 mt-3 flex flex-wrap items-center gap-3 rounded-lg border border-emerald-500/20 bg-emerald-500/10 px-4 py-3 text-sm text-emerald-300">
+                        <div className="flex items-center gap-2">
+                          <Check className="h-4 w-4 shrink-0" />
+                          <span>
+                            Tournée optimisée avec {optimizeSuccessById[t._id].stopCount} arrêts
+                          </span>
+                        </div>
+                        <span className="text-emerald-200/80">
+                          {formatDistance(optimizeSuccessById[t._id].distanceMeters)} ·{" "}
+                          {formatDuration(optimizeSuccessById[t._id].durationSeconds)}
+                        </span>
+                      </div>
+                    )}
+                    {optimizeErrorById[t._id] && (
+                      <div className="mx-5 mt-3 flex items-center gap-2 rounded-lg border border-red-500/20 bg-red-500/10 px-4 py-3 text-sm text-red-400">
+                        <AlertCircle className="h-4 w-4 shrink-0" />
+                        {optimizeErrorById[t._id]}
+                      </div>
+                    )}
+                    {(t.optimizedAt || optimizeSuccessById[t._id]) && (
+                      <div className="mx-5 mt-3 rounded-xl border border-[var(--crm-border)] bg-[var(--crm-surface-2)] p-4">
+                        <div className="flex flex-wrap items-center justify-between gap-3">
+                          <div>
+                            <p className="text-xs font-semibold uppercase tracking-[0.18em] text-zinc-500">
+                              Carte Mapbox
+                            </p>
+                            <p className="mt-1 text-sm text-zinc-300">
+                              Visualisez l’ordre optimisé de la tournée sur la carte.
+                            </p>
+                            <p className="mt-1 text-xs text-zinc-500">
+                              Départ pris en compte : {TOURNEE_DEPOT_ADDRESS}
+                            </p>
+                            {t.optimizedAt ? (
+                              <p className="mt-1 text-xs text-zinc-500">
+                                Optimisée le{" "}
+                                {new Date(t.optimizedAt).toLocaleDateString("fr-FR", {
+                                  day: "2-digit",
+                                  month: "2-digit",
+                                  year: "2-digit",
+                                  hour: "2-digit",
+                                  minute: "2-digit",
+                                })}
+                                {t.estimatedDistanceMeters
+                                  ? ` · ${formatDistance(t.estimatedDistanceMeters)}`
+                                  : ""}
+                                {t.estimatedDurationSeconds
+                                  ? ` · ${formatDuration(t.estimatedDurationSeconds)}`
+                                  : ""}
+                              </p>
+                            ) : null}
+                          </div>
+                          {mapPreviewUrl ? (
+                            <a
+                              href={mapPreviewUrl}
+                              target="_blank"
+                              rel="noreferrer"
+                              className="inline-flex items-center gap-2 rounded-xl bg-brand-500 px-3 py-2 text-xs font-semibold text-white transition hover:opacity-90"
+                            >
+                              <MapPin className="h-3.5 w-3.5" />
+                              Ouvrir la carte
+                            </a>
+                          ) : (
+                            <span className="text-xs text-zinc-500">
+                              Ajoutez `VITE_MAPBOX_ACCESS_TOKEN` pour afficher la carte.
+                            </span>
+                          )}
+                        </div>
+                        {mapPreviewUrl ? (
+                          <a
+                            href={mapPreviewUrl}
+                            target="_blank"
+                            rel="noreferrer"
+                            className="mt-4 block overflow-hidden rounded-xl border border-[var(--crm-border)]"
+                          >
+                            <img
+                              src={mapPreviewUrl}
+                              alt={`Aperçu de la ${t.label}`}
+                              className="h-52 w-full object-cover"
+                              loading="lazy"
+                            />
+                          </a>
+                        ) : null}
+                      </div>
+                    )}
+                    {/* Stops — single list with per-stop tracking links + completion */}
+                    {t.stops.length === 0 ? (
+                      <p className="px-5 py-4 text-sm text-zinc-500">Aucun passage enregistré.</p>
+                    ) : (
+                      <>
+                        {t.stops.some((s) => s.status === "prevu") &&
+                          (t.status === "planifiee" || t.status === "en_cours") && (
+                            <div className="px-5 py-2.5 bg-[var(--crm-surface-2)] border-t border-[var(--crm-border)]">
+                              <p className="text-xs text-zinc-500">
+                                {t.stops.filter((s) => s.status === "effectue").length} /{" "}
+                                {t.stops.length} passage
+                                {t.stops.length > 1 ? "s" : ""} complété
+                                {t.stops.filter((s) => s.status === "effectue").length > 1
+                                  ? "s"
+                                  : ""}
+                              </p>
+                            </div>
+                          )}
+                        {t.stops
+                          .slice()
+                          .sort((a, b) => a.order - b.order)
+                          .map((stop) => {
+                            const trackingToken =
+                              tokenByStopKey.get(stopTrackingKey(stop)) ??
+                              tokenByOrder.get(stop.order);
+                            return (
+                              <div
+                                key={stop.order}
+                                className="flex items-start gap-3 border-t border-[var(--crm-border)] px-4 py-3 sm:gap-4 sm:px-5 sm:py-4"
+                              >
+                              <div
+                                className={`mt-0.5 flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-xs font-bold ${
+                                  stop.status === "effectue"
+                                    ? "bg-emerald-500 text-white"
+                                    : stop.status === "annule"
+                                      ? "bg-zinc-700 text-zinc-500 line-through"
+                                      : "bg-[var(--crm-surface-3)] text-zinc-300"
+                                }`}
+                              >
+                                {stop.status === "effectue" ? (
+                                  <Check className="h-3.5 w-3.5" />
+                                ) : (
+                                  stop.order
+                                )}
+                              </div>
+                              <div className="min-w-0 flex-1 space-y-0.5">
+                                <div className="flex items-center gap-1.5">
+                                  <MapPin className="h-3.5 w-3.5 text-zinc-500 shrink-0" />
+                                  <p
+                                    className={`text-sm font-medium ${stop.status === "annule" ? "text-zinc-600 line-through" : "text-zinc-200"}`}
+                                  >
+                                    {stop.address}
+                                  </p>
+                                </div>
+                                {stop.contactName && (
+                                  <div className="flex items-center gap-1.5">
+                                    <User className="h-3.5 w-3.5 text-zinc-600" />
+                                    <p className="text-xs text-zinc-400">
+                                      {stop.contactName}
+                                      {stop.contactPhone && (
+                                        <span className="text-zinc-500">
+                                          {" "}
+                                          · {stop.contactPhone}
+                                        </span>
+                                      )}
+                                    </p>
+                                  </div>
+                                )}
+                                {stop.requestReference && (
+                                  <p className="text-xs font-semibold text-brand-300">
+                                    Demande #{stop.requestReference}
+                                  </p>
+                                )}
+                                {stop.notes && (
+                                  <p className="text-xs text-zinc-500 italic">{stop.notes}</p>
+                                )}
+                              </div>
+                              <div className="flex shrink-0 items-center gap-1.5">
+                                {trackingToken && (
+                                  <>
+                                    <a
+                                      href={buildTrackingShareUrl(trackingToken)}
+                                      target="_blank"
+                                      rel="noreferrer"
+                                      title="Ouvrir le suivi public"
+                                      className="rounded-lg border border-[var(--crm-border)] p-1.5 text-zinc-400 transition hover:bg-white/5 hover:text-zinc-200"
+                                    >
+                                      <MapPin className="h-3.5 w-3.5" />
+                                    </a>
+                                    <button
+                                      type="button"
+                                      onClick={() => copyShareLink(trackingToken)}
+                                      title="Copier le lien de suivi"
+                                      className="rounded-lg border border-[var(--crm-border)] p-1.5 text-zinc-400 transition hover:bg-white/5 hover:text-zinc-200"
+                                    >
+                                      {copiedToken === trackingToken ? (
+                                        <Check className="h-3.5 w-3.5 text-emerald-400" />
+                                      ) : (
+                                        <Copy className="h-3.5 w-3.5" />
+                                      )}
+                                    </button>
+                                  </>
+                                )}
+                                {(t.status === "planifiee" || t.status === "en_cours") &&
+                                  stop.status === "prevu" && (
+                                    <button
+                                      type="button"
+                                      onClick={() =>
+                                        updateStop({
+                                          tourneeId: t._id as Id<"tournees">,
+                                          stopOrder: stop.order,
+                                          status: "effectue",
+                                        })
+                                      }
+                                      className="rounded-xl bg-emerald-500/15 px-3 py-1.5 text-xs font-bold text-emerald-400 transition hover:bg-emerald-500/25"
+                                    >
+                                      <span className="inline-flex items-center gap-1">
+                                        <Check className="h-3 w-3" />
+                                        Complété
+                                      </span>
+                                    </button>
+                                  )}
+                                {(t.status === "planifiee" || t.status === "en_cours") &&
+                                  stop.status === "effectue" && (
+                                    <button
+                                      type="button"
+                                      onClick={() =>
+                                        updateStop({
+                                          tourneeId: t._id as Id<"tournees">,
+                                          stopOrder: stop.order,
+                                          status: "prevu",
+                                        })
+                                      }
+                                      className="rounded-xl bg-zinc-700/50 px-3 py-1.5 text-xs font-medium text-zinc-400 transition hover:bg-zinc-700"
+                                    >
+                                      Annuler
+                                    </button>
+                                  )}
+                              </div>
+                              </div>
+                            );
+                          })}
+                      </>
+                    )}
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─── Form ─────────────────────────────────────────────────────────────────────
+
+interface StopDraft {
+  requestId?: Id<"requests">;
+  address: string;
+  contactName: string;
+  contactPhone: string;
+  notes: string;
+}
+
+function TourneeForm({
+  teamMembers,
+  onClose,
+}: {
+  teamMembers: Array<{ _id: Id<"teamMembers">; name: string }>;
+  onClose: () => void;
+}) {
+  const initialDate = new Date().toISOString().split("T")[0];
+  const [date, setDate] = useState(initialDate);
+  const [label, setLabel] = useState(() => formatTourneeLabel(initialDate));
+  const [labelTouched, setLabelTouched] = useState(false);
+  const [driverId, setDriverId] = useState("");
+  const [fleetVehicleId, setFleetVehicleId] = useState("");
+  const [stops, setStops] = useState<StopDraft[]>([]);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const createTournee = useMutation(api.sorties.createTournee);
+
+  const openCollectes = useQuery(api.sorties.listUpcomingCollectes);
+  const availableVehicles =
+    useQuery(api.fleet.availableOn, {
+      date: new Date(date).getTime(),
+      includeVehicleId: fleetVehicleId ? (fleetVehicleId as Id<"vehicles">) : undefined,
+    }) ?? [];
+
+  function addStop() {
+    setStops((prev) => [...prev, { address: "", contactName: "", contactPhone: "", notes: "" }]);
+  }
+
+  function removeStop(i: number) {
+    setStops((prev) => prev.filter((_, idx) => idx !== i));
+  }
+
+  function updateStop(i: number, field: keyof StopDraft, value: string) {
+    setStops((prev) => prev.map((s, idx) => (idx === i ? { ...s, [field]: value } : s)));
+  }
+
+  function addFromCollecte(req: {
+    _id: Id<"requests">;
+    reference?: string | null;
+    customer: {
+      address?: string;
+      firstName: string;
+      lastName: string;
+      phone: string;
+    };
+    collecte?: {
+      collectAddress?: {
+        address?: string;
+        postalCode?: string;
+        city?: string;
+      };
+    };
+  }) {
+    const collectAddress = [
+      req.collecte?.collectAddress?.address ?? req.customer.address,
+      req.collecte?.collectAddress?.postalCode,
+      req.collecte?.collectAddress?.city,
+    ]
+      .filter(Boolean)
+      .join(" ");
+    setStops((prev) => [
+      ...prev,
+      {
+        requestId: req._id,
+        address: collectAddress,
+        contactName: `${req.customer.firstName} ${req.customer.lastName}`.trim(),
+        contactPhone: req.customer.phone,
+        notes: req.reference ? `Demande #${req.reference}` : "",
+      },
+    ]);
+  }
+
+  async function handleSave() {
+    if (!label.trim()) {
+      setError("Veuillez saisir un nom pour la tournée.");
+      return;
+    }
+    setError(null);
+    setSaving(true);
+    try {
+      const validStops = stops
+        .filter((s) => s.address.trim())
+        .map((s, i) => ({
+          requestId: s.requestId,
+          address: s.address.trim(),
+          contactName: s.contactName.trim() || undefined,
+          contactPhone: s.contactPhone.trim() || undefined,
+          notes: s.notes.trim() || undefined,
+          status: "prevu" as const,
+          order: i + 1,
+        }));
+
+      await createTournee({
+        label: label.trim(),
+        date: new Date(date).getTime(),
+        driverId: driverId ? (driverId as Id<"teamMembers">) : undefined,
+        fleetVehicleId: fleetVehicleId ? (fleetVehicleId as Id<"vehicles">) : undefined,
+        stops: validStops,
+        notes: undefined,
+      });
+      onClose();
+    } catch (e) {
+      setError("Une erreur est survenue. Veuillez réessayer.");
+      console.error(e);
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <div className="rounded-xl border border-[var(--crm-border)] bg-[var(--crm-surface)] divide-y divide-[var(--crm-border)]">
+      {/* Header */}
+      <div className="flex items-center justify-between px-5 py-4">
+        <h3 className="text-sm font-semibold text-zinc-200">Nouvelle tournée</h3>
+        <button type="button" onClick={onClose} className="text-zinc-500 hover:text-zinc-300 transition">
+          <X className="h-4 w-4" />
+        </button>
+      </div>
+
+      {/* Informations générales */}
+      <div className="p-5 space-y-4">
+        <div>
+          <label className="text-xs font-semibold uppercase tracking-widest text-zinc-500 block mb-1.5">
+            Nom de la tournée <span className="text-brand-400">*</span>
+          </label>
+          <input
+            type="text"
+            value={label}
+            onChange={(e) => {
+              setLabel(e.target.value);
+              setLabelTouched(true);
+            }}
+            placeholder="Ex. : Tournée 22/06/26"
+            className="w-full rounded-lg border border-[var(--crm-border)] bg-[var(--crm-surface-2)] px-3 py-2 text-sm text-zinc-200 placeholder-zinc-500 focus:outline-none focus:ring-1 focus:ring-brand-500"
+          />
+        </div>
+        <div className="grid grid-cols-2 gap-4">
+          <div>
+            <label className="text-xs font-semibold uppercase tracking-widest text-zinc-500 block mb-1.5">Date</label>
+            <input
+              type="date"
+              value={date}
+              onChange={(e) => {
+                const nextDate = e.target.value;
+                setDate(nextDate);
+                if (!labelTouched) {
+                  setLabel(formatTourneeLabel(nextDate));
+                }
+              }}
+              className="w-full rounded-lg border border-[var(--crm-border)] bg-[var(--crm-surface-2)] px-3 py-2 text-sm text-zinc-200 focus:outline-none focus:ring-1 focus:ring-brand-500"
+            />
+          </div>
+          <div>
+            <label className="text-xs font-semibold uppercase tracking-widest text-zinc-500 block mb-1.5">
+              Chauffeur
+            </label>
+            <select
+              value={driverId}
+              onChange={(e) => setDriverId(e.target.value)}
+              className="w-full rounded-lg border border-[var(--crm-border)] bg-[var(--crm-surface-2)] px-3 py-2 text-sm text-zinc-200 focus:outline-none focus:ring-1 focus:ring-brand-500"
+            >
+              <option value="">— Non assigné —</option>
+              {teamMembers.map((m) => (
+                <option key={m._id} value={m._id}>
+                  {m.name}
+                </option>
+              ))}
+            </select>
+          </div>
+        </div>
+        <div>
+          <label className="text-xs font-semibold uppercase tracking-widest text-zinc-500 block mb-1.5">
+            Véhicule
+          </label>
+          <select
+            value={fleetVehicleId}
+            onChange={(e) => setFleetVehicleId(e.target.value)}
+            className="w-full rounded-lg border border-[var(--crm-border)] bg-[var(--crm-surface-2)] px-3 py-2 text-sm text-zinc-200 focus:outline-none focus:ring-1 focus:ring-brand-500"
+          >
+            <option value="">— Aucun véhicule —</option>
+            {availableVehicles.map((vehicle) => (
+              <option key={vehicle._id} value={vehicle._id}>
+                {vehicle.name}
+                {vehicle.plate ? ` · ${vehicle.plate}` : ""}
+              </option>
+            ))}
+          </select>
+          <p className="mt-1 text-[11px] text-zinc-600">
+            Seuls les véhicules disponibles à cette date sont proposés.
+          </p>
+        </div>
+      </div>
+
+      {/* Import depuis les demandes */}
+      {(openCollectes ?? []).length > 0 && (
+        <div className="p-5 space-y-2">
+          <p className="text-xs font-semibold uppercase tracking-widest text-zinc-500">
+            Importer depuis les demandes de collecte
+          </p>
+          <div className="space-y-1 max-h-36 overflow-y-auto rounded-lg border border-[var(--crm-border)]">
+            {(openCollectes ?? []).map((req) => (
+              <button
+                key={req._id}
+                type="button"
+                onClick={() => addFromCollecte(req)}
+                className="flex w-full items-center gap-3 px-3 py-2.5 text-left text-xs transition hover:bg-[var(--crm-surface-2)] border-b border-[var(--crm-border)] last:border-0"
+              >
+                <MapPin className="h-3.5 w-3.5 text-zinc-500 shrink-0" />
+                <span className="text-zinc-300 truncate flex-1">
+                  {req.reference && (
+                    <span className="mr-1 font-semibold text-brand-300">#{req.reference}</span>
+                  )}
+                  {req.customer.firstName} {req.customer.lastName}
+                  <span className="text-zinc-500">
+                    {" "}
+                    —{" "}
+                    {[
+                      req.collecte?.collectAddress?.address ?? req.customer.address,
+                      req.collecte?.collectAddress?.postalCode,
+                      req.collecte?.collectAddress?.city,
+                    ]
+                      .filter(Boolean)
+                      .join(" ")}
+                  </span>
+                </span>
+                <Plus className="h-3.5 w-3.5 text-brand-400 shrink-0" />
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Passages */}
+      <div className="p-5 space-y-3">
+        <div className="flex items-center justify-between">
+          <p className="text-xs font-semibold uppercase tracking-widest text-zinc-500">
+            Passages ({stops.length})
+          </p>
+          <button
+            type="button"
+            onClick={addStop}
+            className="flex items-center gap-1.5 text-xs font-medium text-brand-400 hover:text-brand-300 transition"
+          >
+            <Plus className="h-3.5 w-3.5" />
+            Ajouter un passage
+          </button>
+        </div>
+
+        {stops.length === 0 ? (
+          <p className="text-xs text-zinc-600 italic">
+            Aucun passage — vous pourrez en ajouter après la création.
+          </p>
+        ) : (
+          stops.map((stop, i) => (
+            <div
+              key={i}
+              className="rounded-xl border border-[var(--crm-border)] bg-[var(--crm-surface-2)] p-4 space-y-2.5"
+            >
+              <div className="flex items-center justify-between">
+                <span className="flex h-5 w-5 items-center justify-center rounded-full bg-zinc-700 text-[10px] font-bold text-zinc-300">
+                  {i + 1}
+                </span>
+                <button
+                  type="button"
+                  onClick={() => removeStop(i)}
+                  className="text-zinc-600 hover:text-red-400 transition"
+                >
+                  <X className="h-3.5 w-3.5" />
+                </button>
+              </div>
+              <input
+                type="text"
+                value={stop.address}
+                onChange={(e) => updateStop(i, "address", e.target.value)}
+                placeholder="Adresse"
+                className="w-full rounded-lg border border-[var(--crm-border)] bg-[var(--crm-surface)] px-3 py-2 text-sm text-zinc-200 placeholder-zinc-500 focus:outline-none focus:ring-1 focus:ring-brand-500"
+              />
+              <div className="grid grid-cols-2 gap-2">
+                <input
+                  type="text"
+                  value={stop.contactName}
+                  onChange={(e) => updateStop(i, "contactName", e.target.value)}
+                  placeholder="Nom du contact"
+                  className="rounded-lg border border-[var(--crm-border)] bg-[var(--crm-surface)] px-3 py-2 text-sm text-zinc-200 placeholder-zinc-500 focus:outline-none focus:ring-1 focus:ring-brand-500"
+                />
+                <input
+                  type="tel"
+                  value={stop.contactPhone}
+                  onChange={(e) => updateStop(i, "contactPhone", e.target.value)}
+                  placeholder="Téléphone"
+                  className="rounded-lg border border-[var(--crm-border)] bg-[var(--crm-surface)] px-3 py-2 text-sm text-zinc-200 placeholder-zinc-500 focus:outline-none focus:ring-1 focus:ring-brand-500"
+                />
+              </div>
+              <input
+                type="text"
+                value={stop.notes}
+                onChange={(e) => updateStop(i, "notes", e.target.value)}
+                placeholder="Notes (accès, digicode, étage…)"
+                className="w-full rounded-lg border border-[var(--crm-border)] bg-[var(--crm-surface)] px-3 py-2 text-sm text-zinc-200 placeholder-zinc-500 focus:outline-none focus:ring-1 focus:ring-brand-500"
+              />
+            </div>
+          ))
+        )}
+      </div>
+
+      {/* Footer */}
+      <div className="p-5 space-y-3">
+        {error && (
+          <div className="flex items-center gap-2 rounded-lg border border-red-500/20 bg-red-500/10 px-4 py-3 text-sm text-red-400">
+            <AlertCircle className="h-4 w-4 shrink-0" />
+            {error}
+          </div>
+        )}
+        <button
+          type="button"
+          onClick={handleSave}
+          disabled={!label.trim() || saving}
+          className="flex w-full items-center justify-center gap-2 rounded-xl bg-brand-500 py-3 text-sm font-bold text-white disabled:opacity-40 shadow-[0_4px_14px_rgba(241,16,79,0.3)] transition hover:opacity-90"
+        >
+          {saving ? <Loader2 className="h-4 w-4 animate-spin" /> : <Check className="h-4 w-4" />}
+          {saving ? "Création en cours…" : "Créer la tournée"}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// ─── Historique ───────────────────────────────────────────────────────────────
+
+function HistoriqueTab() {
+  const now = useMemo(() => Date.now(), []);
+  const tournees = useQuery(api.sorties.listTournees, {
+    startDate: now - 180 * 86400000,
+    endDate: now,
+  });
+
+  if (tournees === undefined) {
+    return (
+      <div className="flex items-center gap-3 text-sm text-zinc-500">
+        <Loader2 className="h-4 w-4 animate-spin" />
+        Chargement…
+      </div>
+    );
+  }
+
+  const past = tournees.filter(
+    (t) => t.status === "terminee" || t.status === "annulee",
+  );
+
+  if (past.length === 0) {
+    return (
+      <div className="rounded-2xl border border-dashed border-[var(--crm-border)] bg-[var(--crm-surface)] p-12 text-center">
+        <Calendar className="mx-auto h-10 w-10 text-zinc-600 mb-3" />
+        <p className="text-zinc-400 text-sm">Aucune tournée terminée sur les 6 derniers mois.</p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-3">
+      <p className="text-xs text-zinc-500">
+        {past.length} tournée{past.length > 1 ? "s" : ""} (6 derniers mois)
+      </p>
+      {past.map((t) => {
+        const doneStops = t.stops.filter((s) => s.status === "effectue").length;
+        return (
+          <div
+            key={t._id}
+            className="flex items-center gap-4 rounded-xl border border-[var(--crm-border)] bg-[var(--crm-surface)] px-5 py-4"
+          >
+            <Truck
+              className={`h-5 w-5 shrink-0 ${
+                t.status === "terminee" ? "text-emerald-400" : "text-zinc-500"
+              }`}
+            />
+            <div className="min-w-0 flex-1">
+              <p className="text-sm font-semibold text-zinc-100">{t.label}</p>
+              <p className="text-xs text-zinc-500">
+                {new Date(t.date).toLocaleDateString("fr-FR", {
+                  weekday: "short", day: "numeric", month: "short", year: "numeric",
+                })}
+                {t.stops.length > 0 &&
+                  ` · ${doneStops}/${t.stops.length} passage${t.stops.length > 1 ? "s" : ""}`}
+                {t.driverName && ` · ${t.driverName}`}
+                {t.vehicleName && ` · 🚚 ${t.vehicleName}`}
+              </p>
+            </div>
+            <span
+              className={`rounded-full px-2 py-0.5 text-[10px] font-semibold ${STATUS_STYLE[t.status]}`}
+            >
+              {STATUS_LABELS[t.status]}
+            </span>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
