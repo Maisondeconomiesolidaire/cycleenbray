@@ -1008,7 +1008,7 @@ function ProfilePage() {
         </nav>
 
         {tab === "apps" ? (
-          <MyAppsGrid />
+          <MyAppsGrid current="cycleenbray" />
         ) : (
         <section className="rounded-lg border border-zinc-200 bg-white p-5 shadow-sm">
           <div className="flex flex-col gap-5 sm:flex-row sm:items-center">
