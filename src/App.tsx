@@ -6,7 +6,8 @@ import {
   useRef,
   useState,
 } from "react";
-import { SignedIn, SignedOut, SignIn, useClerk, useUser } from "@clerk/clerk-react";
+import { SignedIn, SignedOut, useClerk, useUser } from "@clerk/clerk-react";
+import { AuthPanel } from "./components/AuthPanel";
 import { useMutation, useQuery } from "convex/react";
 import {
   Bike,
@@ -601,7 +602,7 @@ function BikeCard({ bike }: { bike: BikeWithPhotos }) {
   return (
     <Link to={`/velos/${bike._id}`} className="group overflow-hidden rounded-lg border border-zinc-200 bg-white shadow-sm transition hover:-translate-y-0.5 hover:shadow-xl">
       <div className="relative aspect-[4/3] overflow-hidden bg-zinc-100">
-        <img src={bikeImage(bike)} alt={bike.title} className="h-full w-full object-cover transition duration-500 group-hover:scale-105" />
+        <img src={bikeImage(bike)} alt={bike.title} loading="lazy" decoding="async" className="h-full w-full object-cover transition duration-500 group-hover:scale-105" />
         {(bike.status === "purchase_pending" || bike.status === "waiting" || bike.status === "reserved") && (
           <span className="absolute left-3 top-3 rounded-full bg-orange-500 px-3 py-1 text-xs font-semibold text-white shadow-sm">
             Déjà réservé
@@ -689,7 +690,7 @@ function BikeDetail() {
           <div className="grid grid-cols-4 gap-3">
             {galleryImages.slice(0, 8).map((url, index) => (
               <button key={`${url}-${index}`} type="button" onClick={() => setActiveImage(index)} className={cn("overflow-hidden rounded-lg border bg-zinc-100", activeImage === index ? "border-[#196b24] ring-2 ring-[#196b24]/20" : "border-transparent")}>
-                <img src={url} alt="" className="aspect-square w-full object-cover" />
+                <img src={url} alt="" loading="lazy" decoding="async" className="aspect-square w-full object-cover" />
               </button>
             ))}
           </div>
@@ -740,7 +741,7 @@ function BikeDetail() {
               </p>
               <div className="mt-6 rounded-xl border border-zinc-200 bg-zinc-50 p-4 text-left">
                 <div className="flex gap-3">
-                  <img src={bikeImage(bike)} alt="" className="h-20 w-20 rounded-lg object-cover" />
+                  <img src={bikeImage(bike)} alt="" loading="lazy" decoding="async" className="h-20 w-20 rounded-lg object-cover" />
                   <div className="min-w-0">
                     <p className="font-semibold text-zinc-950">{shopBikeTitle(bike)}</p>
                     <p className="mt-1 text-sm text-zinc-600">{bike.useMode === "rental" ? "Location" : euro(bike.price)}</p>
@@ -760,7 +761,7 @@ function BikeDetail() {
         ) : (
           <div className="grid min-h-[560px] lg:grid-cols-[0.86fr_1.14fr]">
             <aside className="relative overflow-hidden bg-zinc-950 text-white">
-              <img src={bikeImage(bike)} alt="" className="absolute inset-0 h-full w-full object-cover opacity-72" />
+              <img src={bikeImage(bike)} alt="" loading="lazy" decoding="async" className="absolute inset-0 h-full w-full object-cover opacity-72" />
               <div className="absolute inset-0 bg-gradient-to-t from-black/82 via-black/20 to-black/10" />
               <div className="relative flex h-full min-h-[320px] flex-col justify-end p-6">
                 <span className="mb-4 inline-flex w-fit rounded-full bg-white/16 px-3 py-1 text-xs font-semibold backdrop-blur">
@@ -850,7 +851,7 @@ function CrmLayout() {
             <LogoMark className="mx-auto h-16 w-52" />
             <h1 className="mt-5 text-2xl font-semibold">CRM</h1>
             <p className="mt-2 text-sm text-zinc-600">Connexion Clerk requise.</p>
-            <div className="mt-6"><SignIn routing="hash" /></div>
+            <div className="mt-6"><AuthPanel /></div>
           </div>
         </div>
       </SignedOut>
@@ -1241,7 +1242,7 @@ function StockBikeDetailModal({ bike, onClose }: { bike: BikeWithPhotos | null; 
       bodyClassName="p-6"
     >
       <div className="grid gap-6 lg:grid-cols-[320px_1fr]">
-        <img src={bikeImage(bike)} alt="" className="aspect-[4/3] w-full rounded-lg object-cover" />
+        <img src={bikeImage(bike)} alt="" loading="lazy" decoding="async" className="aspect-[4/3] w-full rounded-lg object-cover" />
         <div>
           <p className="text-sm text-zinc-500">{bike.description}</p>
           <div className="mt-5 grid grid-cols-2 gap-3">

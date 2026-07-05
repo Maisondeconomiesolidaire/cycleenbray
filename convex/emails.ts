@@ -1,10 +1,10 @@
 import { internalAction } from "./_generated/server";
 import { v } from "convex/values";
 
-// Adresse d'expédition. En test (pas encore de domaine vérifié), on utilise
-// l'adresse fournie par Resend. À remplacer par une adresse @votre-domaine
-// une fois le domaine vérifié sur resend.com.
-const FROM = "Cycle en Bray <onboarding@resend.dev>";
+// Adresse d'expédition. Domaine `mesoutils.eco-solidaire.fr` vérifié sur Resend
+// (partagé par toutes les apps de l'écosystème) — meilleure délivrabilité que
+// l'ancienne adresse de test onboarding@resend.dev.
+const FROM = "Recyclerie <no-reply@mesoutils.eco-solidaire.fr>";
 
 /** URL publique de l'app (liens des emails). À régler via `npx convex env set APP_URL`. */
 function appUrl() {
@@ -20,7 +20,7 @@ function siteUrl() {
 }
 
 /** URL directe (octets, sans redirection) d'un fichier du stockage Convex. */
-function storageImageUrl(storageId: string) {
+export function storageImageUrl(storageId: string) {
   return `${siteUrl()}/email/image?id=${encodeURIComponent(storageId)}`;
 }
 
@@ -189,7 +189,7 @@ function shell(opts: {
 }
 
 export async function resendSend(
-  to: string,
+  to: string | string[],
   subject: string,
   html: string,
   from: string = FROM,
@@ -199,8 +199,13 @@ export async function resendSend(
     console.warn("RESEND_API_KEY non configurée — email ignoré.");
     return;
   }
-  const email = to.trim();
-  if (!email) return;
+  // Un SEUL appel Resend, même pour plusieurs destinataires (évite de dépasser
+  // la limite de 2 requêtes/seconde de Resend qui faisait silencieusement
+  // échouer une partie des emails managers).
+  const recipients = (Array.isArray(to) ? to : [to])
+    .map((email) => email.trim())
+    .filter(Boolean);
+  if (recipients.length === 0) return;
 
   const response = await fetch("https://api.resend.com/emails", {
     method: "POST",
@@ -208,7 +213,7 @@ export async function resendSend(
       "Content-Type": "application/json",
       Authorization: `Bearer ${apiKey}`,
     },
-    body: JSON.stringify({ from, to: [email], subject, html }),
+    body: JSON.stringify({ from, to: recipients, subject, html }),
   });
 
   if (!response.ok) {
@@ -285,6 +290,35 @@ export const sendRequestConfirmation = internalAction({
       `,
     });
     await resendSend(email, `Demande bien reçue · ${label} #${reference}`, html);
+  },
+});
+
+/** Staff prévenu à chaque nouvelle demande (aérogommage, collecte, etc.). */
+const NEW_REQUEST_STAFF_EMAILS = [
+  "accueil.recyclerie@eco-solidaire.fr",
+  "e.carette@eco-solidaire.fr",
+  "s.tiennot@eco-solidaire.fr",
+];
+
+export const sendNewRequestToStaff = internalAction({
+  args: {
+    type: v.string(),
+    reference: v.string(),
+    customerName: v.string(),
+    article: articleArg,
+  },
+  handler: async (_ctx, { type, reference, customerName, article }) => {
+    const label = typeLabel(type);
+    const html = shell({
+      preheader: `Nouvelle demande ${label} de ${customerName} (#${reference}).`,
+      heading: "Nouvelle demande reçue",
+      intro: `Une nouvelle demande <strong>${esc(label)}</strong> vient d'être créée par <strong>${esc(customerName)}</strong> (référence <strong>#${esc(reference)}</strong>).`,
+      contentHtml: `
+        ${buildArticleCard(article)}
+        <div style="margin:0 0 22px;">${button(`${appUrl()}/crm/notifications`, "Voir la demande")}</div>
+      `,
+    });
+    await resendSend(NEW_REQUEST_STAFF_EMAILS, `Nouvelle demande · ${label} #${reference}`, html);
   },
 });
 

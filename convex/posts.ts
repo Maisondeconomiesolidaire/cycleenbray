@@ -1,6 +1,6 @@
 import { v } from "convex/values";
-import { mutation, query } from "./_generated/server";
-import type { Doc } from "./_generated/dataModel";
+import { internalMutation, mutation, query } from "./_generated/server";
+import type { Doc, Id } from "./_generated/dataModel";
 import type { MutationCtx, QueryCtx } from "./_generated/server";
 import { requireCrmPermission, requireUser } from "./lib";
 import { createMesoutilsNotification } from "./mesoutilsNotifications";
@@ -27,6 +27,9 @@ async function enrichPost(
 ) {
   const imageUrls = (
     await Promise.all(post.images.map((image) => ctx.storage.getUrl(image)))
+  ).filter((value): value is string => Boolean(value));
+  const videoUrls = (
+    await Promise.all((post.videos ?? []).map((video) => ctx.storage.getUrl(video)))
   ).filter((value): value is string => Boolean(value));
 
   const [comments, likes] = await Promise.all([
@@ -56,6 +59,7 @@ async function enrichPost(
   return {
     ...post,
     imageUrls,
+    videoUrls,
     comments: commentsWithMeta,
     likesCount: likes.length,
     latestLikeName: likes.length > 0 ? latestLikeName : undefined,
@@ -91,12 +95,13 @@ export const create = mutation({
   args: {
     body: v.string(),
     images: v.optional(v.array(v.id("_storage"))),
+    videos: v.optional(v.array(v.id("_storage"))),
   },
   handler: async (ctx, args) => {
     await requireCrmPermission(ctx, POSTS_PAGE_KEY, "create");
     const identity = await requireUser(ctx);
     const body = args.body.trim();
-    if (!body && !(args.images?.length ?? 0)) {
+    if (!body && !(args.images?.length ?? 0) && !(args.videos?.length ?? 0)) {
       throw new Error("Le post est vide.");
     }
 
@@ -107,6 +112,7 @@ export const create = mutation({
         (identity as { pictureUrl?: string | null }).pictureUrl ?? undefined,
       body,
       images: args.images ?? [],
+      videos: args.videos ?? [],
       pinned: false,
       createdAt: Date.now(),
     });
@@ -118,6 +124,7 @@ export const update = mutation({
     postId: v.id("posts"),
     body: v.string(),
     images: v.optional(v.array(v.id("_storage"))),
+    videos: v.optional(v.array(v.id("_storage"))),
   },
   handler: async (ctx, args) => {
     await requireCrmPermission(ctx, POSTS_PAGE_KEY, "create");
@@ -129,12 +136,32 @@ export const update = mutation({
     }
     const body = args.body.trim();
     const images = args.images ?? post.images;
-    if (!body && images.length === 0) {
+    const videos = args.videos ?? post.videos ?? [];
+    if (!body && images.length === 0 && videos.length === 0) {
       throw new Error("Le post est vide.");
     }
-    await ctx.db.patch(args.postId, { body, images, editedAt: Date.now() });
+    // Libère les fichiers retirés du post (sinon ils restent orphelins).
+    const kept = new Set<Id<"_storage">>([...images, ...videos]);
+    await deleteStorageFiles(
+      ctx,
+      [...post.images, ...(post.videos ?? [])].filter((id) => !kept.has(id)),
+    );
+    await ctx.db.patch(args.postId, { body, images, videos, editedAt: Date.now() });
   },
 });
+
+/** Supprime des fichiers du storage en ignorant ceux déjà absents. */
+async function deleteStorageFiles(ctx: MutationCtx, ids: Id<"_storage">[]) {
+  await Promise.all(
+    ids.map(async (id) => {
+      try {
+        await ctx.storage.delete(id);
+      } catch {
+        // Fichier déjà supprimé : rien à faire.
+      }
+    }),
+  );
+}
 
 export const addComment = mutation({
   args: {
@@ -231,7 +258,11 @@ export const toggleLike = mutation({
         recipientClerkId: post.authorClerkId,
         kind: "post_liked",
         title: `${displayName(identity)} a liké votre post`,
-        body: post.body ? post.body.slice(0, 120) : "Publication avec photo",
+        body: post.body
+          ? post.body.slice(0, 120)
+          : (post.videos?.length ?? 0) > 0
+            ? "Publication avec vidéo"
+            : "Publication avec photo",
         actorName: displayName(identity),
         actorImageUrl: (identity as { pictureUrl?: string | null }).pictureUrl ?? undefined,
         href: "/actualites?v=publications",
@@ -265,7 +296,32 @@ export const remove = mutation({
       ...comments.map((comment) => ctx.db.delete(comment._id)),
       ...likes.map((like) => ctx.db.delete(like._id)),
     ]);
+    // Libère aussi les fichiers du post (images + vidéos).
+    await deleteStorageFiles(ctx, [...post.images, ...(post.videos ?? [])]);
     await ctx.db.delete(args.postId);
+  },
+});
+
+/**
+ * Maintenance : retire toutes les vidéos des posts et supprime leurs fichiers
+ * du storage (les vidéos servies depuis Convex explosent le data egress).
+ * À lancer via `npx convex run posts:removeAllPostVideos`.
+ */
+export const removeAllPostVideos = internalMutation({
+  args: {},
+  handler: async (ctx) => {
+    const posts = await ctx.db.query("posts").collect();
+    let removedFiles = 0;
+    let touchedPosts = 0;
+    for (const post of posts) {
+      const videos = post.videos ?? [];
+      if (videos.length === 0) continue;
+      await deleteStorageFiles(ctx, videos);
+      await ctx.db.patch(post._id, { videos: [] });
+      removedFiles += videos.length;
+      touchedPosts += 1;
+    }
+    return { touchedPosts, removedFiles };
   },
 });
 

@@ -25,6 +25,23 @@ import { vehicleBusyReason } from "./fleet";
 import { internal } from "./_generated/api";
 import { Doc, Id } from "./_generated/dataModel";
 
+/**
+ * Fusionne le dernier modificateur (`actorName`) pour chaque champ modifié,
+ * afin d'afficher « Modifié par … » sous chaque champ du CRM.
+ */
+function withFieldEdits(
+  existing: Record<string, { by: string; at: number }> | undefined,
+  keys: string[],
+  actorName: string | undefined,
+): Record<string, { by: string; at: number }> | undefined {
+  if (keys.length === 0) return existing;
+  const by = actorName?.trim() || "Inconnu";
+  const at = Date.now();
+  const next = { ...(existing ?? {}) };
+  for (const key of keys) next[key] = { by, at };
+  return next;
+}
+
 const customerArg = v.object({
   firstName: v.string(),
   lastName: v.string(),
@@ -106,6 +123,17 @@ async function createNewRequestNotification(
       reference: request.reference ?? String(request._id).slice(-6),
       type: request.type,
       requestId: String(request._id),
+      article: await emailArticlePreview(ctx, request),
+    });
+  }
+
+  // Email à l'équipe recyclerie (accueil / e.carette / s.tiennot) — décalé pour
+  // rester sous la limite Resend (2 req/s) avec l'email client.
+  if (request) {
+    await ctx.scheduler.runAfter(1200, internal.emails.sendNewRequestToStaff, {
+      type: request.type,
+      reference: request.reference ?? String(request._id).slice(-6),
+      customerName: customerFullName(request.customer),
       article: await emailArticlePreview(ctx, request),
     });
   }
@@ -843,16 +871,24 @@ export const patchManagement = mutation({
     assignedVehicle: v.optional(v.union(v.id("vehicles"), v.null())),
     beforePhotos: v.optional(v.array(v.id("_storage"))),
     afterPhotos: v.optional(v.array(v.id("_storage"))),
+    // Nom de l'auteur (persona sélectionné ou nom du compte).
+    actorName: v.optional(v.string()),
   },
   handler: async (ctx, args) => {
     await requireCrmPermission(ctx, "demandes", "update");
+    const request = await ctx.db.get(args.id);
     const patch: Record<string, unknown> = { updatedAt: Date.now() };
-    if (args.site !== undefined) patch.site = args.site;
-    if (args.assignedTo !== undefined)
+    const changed: string[] = [];
+    if (args.site !== undefined) {
+      patch.site = args.site;
+      changed.push("site");
+    }
+    if (args.assignedTo !== undefined) {
       patch.assignedTo = args.assignedTo ?? undefined;
+      changed.push("assignedTo");
+    }
     if (args.assignedVehicle !== undefined) {
       if (args.assignedVehicle) {
-        const request = await ctx.db.get(args.id);
         const date = request?.scheduledDate ?? Date.now();
         const reason = await vehicleBusyReason(ctx, args.assignedVehicle, date, {
           excludeRequestId: args.id,
@@ -862,19 +898,32 @@ export const patchManagement = mutation({
         }
       }
       patch.assignedVehicle = args.assignedVehicle ?? undefined;
+      changed.push("assignedVehicle");
     }
-    if (args.estimatedHours !== undefined)
+    if (args.estimatedHours !== undefined) {
       patch.estimatedHours = args.estimatedHours ?? undefined;
-    if (args.actualHours !== undefined)
+      changed.push("estimatedHours");
+    }
+    if (args.actualHours !== undefined) {
       patch.actualHours = args.actualHours ?? undefined;
-    if (args.quoteAmount !== undefined)
+      changed.push("actualHours");
+    }
+    if (args.quoteAmount !== undefined) {
       patch.quoteAmount = args.quoteAmount ?? undefined;
-    if (args.quoteDetails !== undefined)
+      changed.push("quoteAmount");
+    }
+    if (args.quoteDetails !== undefined) {
       patch.quoteDetails = args.quoteDetails ?? undefined;
-    if (args.visitNeeded !== undefined)
+      changed.push("quoteDetails");
+    }
+    if (args.visitNeeded !== undefined) {
       patch.visitNeeded = args.visitNeeded ?? undefined;
+      changed.push("visitNeeded");
+    }
     if (args.beforePhotos !== undefined) patch.beforePhotos = args.beforePhotos;
     if (args.afterPhotos !== undefined) patch.afterPhotos = args.afterPhotos;
+    const fieldEdits = withFieldEdits(request?.fieldEdits, changed, args.actorName);
+    if (fieldEdits) patch.fieldEdits = fieldEdits;
     await ctx.db.patch(args.id, patch);
   },
 });
@@ -885,14 +934,16 @@ export const schedule = mutation({
     id: v.id("requests"),
     scheduledDate: v.optional(v.number()),
     assignedVehicle: v.optional(v.union(v.id("vehicles"), v.null())),
+    actorName: v.optional(v.string()),
   },
-  handler: async (ctx, { id, scheduledDate, assignedVehicle }) => {
+  handler: async (ctx, { id, scheduledDate, assignedVehicle, actorName }) => {
     await requireAnyCrmPermission(ctx, [["demandes", "update"], ["calendrier", "update"]]);
     const previous = await ctx.db.get(id);
     const patch: Record<string, unknown> = {
       scheduledDate,
       updatedAt: Date.now(),
     };
+    const changed = ["scheduledDate"];
     if (assignedVehicle !== undefined) {
       if (assignedVehicle && scheduledDate) {
         const reason = await vehicleBusyReason(
@@ -906,7 +957,10 @@ export const schedule = mutation({
         }
       }
       patch.assignedVehicle = assignedVehicle ?? undefined;
+      changed.push("assignedVehicle");
     }
+    const fieldEdits = withFieldEdits(previous?.fieldEdits, changed, actorName);
+    if (fieldEdits) patch.fieldEdits = fieldEdits;
     await ctx.db.patch(id, patch);
     // Prévenir le client par email quand une date est (re)programmée.
     if (
@@ -1043,8 +1097,8 @@ export const addProcessNote = mutation({
 
 /** Définit le sous-type d'une collecte (C1/C2/C3) → recalcule le process. */
 export const setCollecteType = mutation({
-  args: { id: v.id("requests"), collecteType },
-  handler: async (ctx, { id, collecteType: ct }) => {
+  args: { id: v.id("requests"), collecteType, actorName: v.optional(v.string()) },
+  handler: async (ctx, { id, collecteType: ct, actorName }) => {
     await requireCrmPermission(ctx, "demandes", "update");
     const r = await ctx.db.get(id);
     if (!r) throw new Error("Demande introuvable.");
@@ -1057,16 +1111,88 @@ export const setCollecteType = mutation({
       processNotes: [],
       outcome: "open",
       updatedAt: Date.now(),
+      fieldEdits: withFieldEdits(r.fieldEdits, ["collecteType"], actorName),
+    });
+  },
+});
+
+/**
+ * Ajoute des photos (uploadées par l'équipe) à une catégorie d'objets d'une
+ * collecte. Fusionne avec les photos déjà présentes pour cette catégorie et
+ * s'assure que la catégorie apparaît dans `objectCategories`.
+ */
+export const addCollecteCategoryPhotos = mutation({
+  args: {
+    id: v.id("requests"),
+    category: v.string(),
+    photos: v.array(v.id("_storage")),
+  },
+  handler: async (ctx, { id, category, photos }) => {
+    await requireCrmPermission(ctx, "demandes", "update");
+    if (photos.length === 0) return;
+    const r = await ctx.db.get(id);
+    if (!r) throw new Error("Demande introuvable.");
+    if (r.type !== "collecte") throw new Error("Type de demande invalide.");
+
+    const collecte = r.collecte ?? {};
+    const categoryPhotos = [...(collecte.categoryPhotos ?? [])];
+    const existing = categoryPhotos.find((e) => e.category === category);
+    if (existing) {
+      existing.photos = [...existing.photos, ...photos];
+    } else {
+      categoryPhotos.push({ category, photos });
+    }
+    const objectCategories = collecte.objectCategories ?? [];
+    const nextCategories = objectCategories.includes(category)
+      ? objectCategories
+      : [...objectCategories, category];
+
+    await ctx.db.patch(id, {
+      collecte: { ...collecte, categoryPhotos, objectCategories: nextCategories },
+      updatedAt: Date.now(),
+    });
+  },
+});
+
+/** Retire une photo d'une catégorie d'objets d'une collecte (index dans la catégorie). */
+export const removeCollecteCategoryPhoto = mutation({
+  args: {
+    id: v.id("requests"),
+    category: v.string(),
+    index: v.number(),
+  },
+  handler: async (ctx, { id, category, index }) => {
+    await requireCrmPermission(ctx, "demandes", "update");
+    const r = await ctx.db.get(id);
+    if (!r) throw new Error("Demande introuvable.");
+    if (r.type !== "collecte" || !r.collecte) return;
+
+    const categoryPhotos = (r.collecte.categoryPhotos ?? [])
+      .map((entry) => {
+        if (entry.category !== category) return entry;
+        const photos = entry.photos.filter((_, i) => i !== index);
+        return { ...entry, photos };
+      })
+      .filter((entry) => entry.photos.length > 0);
+
+    await ctx.db.patch(id, {
+      collecte: { ...r.collecte, categoryPhotos },
+      updatedAt: Date.now(),
     });
   },
 });
 
 /** Met à jour les coordonnées du client d'une demande (onglet Client). */
 export const updateCustomer = mutation({
-  args: { id: v.id("requests"), customer: customerArg },
-  handler: async (ctx, { id, customer }) => {
+  args: { id: v.id("requests"), customer: customerArg, actorName: v.optional(v.string()) },
+  handler: async (ctx, { id, customer, actorName }) => {
     await requireCrmPermission(ctx, "demandes", "update");
-    await ctx.db.patch(id, { customer: normalizeCustomer(customer), updatedAt: Date.now() });
+    const request = await ctx.db.get(id);
+    await ctx.db.patch(id, {
+      customer: normalizeCustomer(customer),
+      updatedAt: Date.now(),
+      fieldEdits: withFieldEdits(request?.fieldEdits, ["customer"], actorName),
+    });
   },
 });
 
