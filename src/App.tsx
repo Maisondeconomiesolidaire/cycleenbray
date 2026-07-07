@@ -269,7 +269,7 @@ function formFromBike(bike: BikeWithPhotos): BikeForm {
 export default function App() {
   return (
     <>
-    <UpdateAvailableBanner />
+    <UpdateAvailableBanner appName="Cycle en Bray" />
     <Routes>
       <Route element={<PublicLayout />}>
         <Route path="/" element={<Shop />} />
