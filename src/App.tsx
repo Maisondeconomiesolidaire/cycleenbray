@@ -40,6 +40,7 @@ import { Drawer } from "./components/ui/Drawer";
 import { cn } from "./lib/cn";
 import { useUpload } from "./lib/useUpload";
 import { MyAppsGrid } from "./components/MyApps";
+import { UpdateAvailableBanner } from "./components/UpdateAvailableBanner";
 import { ConfirmRoot } from "./lib/confirm";
 
 type BikeStatus = "inactive" | "available" | "purchase_pending" | "sold";
@@ -268,6 +269,7 @@ function formFromBike(bike: BikeWithPhotos): BikeForm {
 export default function App() {
   return (
     <>
+    <UpdateAvailableBanner />
     <Routes>
       <Route element={<PublicLayout />}>
         <Route path="/" element={<Shop />} />
