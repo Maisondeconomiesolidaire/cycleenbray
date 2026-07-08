@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { SignIn, SignUp } from "@clerk/clerk-react";
+import { needsCentralAuthRedirect, redirectToCentralAuth } from "../lib/centralAuth";
 
 type AuthMode = "choice" | "sign-in" | "sign-up";
 
@@ -10,6 +11,19 @@ type AuthMode = "choice" | "sign-in" | "sign-up";
  * mais on n'affiche Clerk qu'après le choix explicite de l'utilisateur.
  */
 export function AuthPanel() {
+  if (needsCentralAuthRedirect()) {
+    return (
+      <div className="grid gap-3">
+        <button type="button" onClick={() => redirectToCentralAuth("sign-in")} className="rounded-2xl bg-zinc-950 px-5 py-4 text-base font-bold text-white shadow-sm transition hover:-translate-y-0.5 hover:bg-zinc-800">
+          J'ai déjà un compte, me connecter
+        </button>
+        <button type="button" onClick={() => redirectToCentralAuth("sign-up")} className="rounded-2xl border border-zinc-200 bg-white px-5 py-4 text-base font-bold text-zinc-950 shadow-sm transition hover:-translate-y-0.5 hover:border-emerald-300 hover:bg-emerald-50">
+          Je m'inscris
+        </button>
+      </div>
+    );
+  }
+
   const [mode, setMode] = useState<AuthMode>(() => {
     if (window.location.hash.startsWith("#/sign-up")) return "sign-up";
     if (window.location.hash.startsWith("#/sign-in")) return "sign-in";
