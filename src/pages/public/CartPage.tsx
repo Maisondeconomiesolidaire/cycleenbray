@@ -23,8 +23,7 @@ import { PhoneInput } from "../../components/ui/PhoneInput";
 import { AddressAutocomplete } from "../../components/ui/AddressAutocomplete";
 import { useProfileAutofill } from "../../components/public/useProfileAutofill";
 import { CustomerSummary } from "../../components/public/CustomerSummary";
-import { SignedIn, SignedOut } from "@clerk/clerk-react";
-import { redirectToCentralAuth } from "../../lib/centralAuth";
+import { SignedIn, SignedOut, SignInButton } from "@clerk/clerk-react";
 
 const BRAND = "#f1104f";
 
@@ -317,13 +316,11 @@ export function CartPage() {
                 Un compte est nécessaire pour réserver : il vous permet de suivre l'avancement de
                 votre demande et d'échanger avec notre équipe.
               </p>
-              <button
-                type="button"
-                onClick={() => redirectToCentralAuth("sign-in")}
-                className="mt-4 inline-flex rounded-full bg-brand-500 px-6 py-3 text-sm font-bold text-white shadow-[0_12px_30px_rgba(241,16,79,0.28)] transition hover:-translate-y-0.5"
-              >
-                Se connecter / S'inscrire
-              </button>
+              <SignInButton mode="modal">
+                <button className="mt-4 inline-flex rounded-full bg-brand-500 px-6 py-3 text-sm font-bold text-white shadow-[0_12px_30px_rgba(241,16,79,0.28)] transition hover:-translate-y-0.5">
+                  Se connecter / S'inscrire
+                </button>
+              </SignInButton>
             </div>
           </SignedOut>
 
