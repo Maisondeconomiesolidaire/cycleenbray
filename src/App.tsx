@@ -39,7 +39,6 @@ import type { Doc, Id } from "../convex/_generated/dataModel";
 import { Drawer } from "./components/ui/Drawer";
 import { cn } from "./lib/cn";
 import { useUpload } from "./lib/useUpload";
-import { MyAppsGrid } from "./components/MyApps";
 import { UpdateAvailableBanner } from "./components/UpdateAvailableBanner";
 import { ConfirmRoot } from "./lib/confirm";
 
@@ -954,7 +953,6 @@ function ProfilePage() {
   const [saving, setSaving] = useState(false);
   const [uploading, setUploading] = useState(false);
   const [message, setMessage] = useState("");
-  const [tab, setTab] = useState<"infos" | "apps">("infos");
 
   if (!isLoaded) return <LoadingState dark />;
   if (!user) return <Navigate to="/crm" replace />;
@@ -998,25 +996,6 @@ function ProfilePage() {
     <div className="min-h-screen bg-white">
       <PageHeader title="Profil" />
       <main className="mx-auto max-w-3xl p-4 sm:p-6">
-        <nav className="mb-6 flex gap-1 overflow-x-auto border-b border-zinc-200">
-          {([{ key: "infos", label: "Informations" }, { key: "apps", label: "Mes applications" }] as const).map((t) => (
-            <button
-              key={t.key}
-              type="button"
-              onClick={() => setTab(t.key)}
-              className={cn(
-                "shrink-0 border-b-2 px-4 py-2.5 text-sm font-semibold transition",
-                tab === t.key ? "border-brand-500 text-zinc-950" : "border-transparent text-zinc-500 hover:text-zinc-800",
-              )}
-            >
-              {t.label}
-            </button>
-          ))}
-        </nav>
-
-        {tab === "apps" ? (
-          <MyAppsGrid current="cycleenbray" />
-        ) : (
         <section className="rounded-lg border border-zinc-200 bg-white p-5 shadow-sm">
           <div className="flex flex-col gap-5 sm:flex-row sm:items-center">
             <UserAvatar size="lg" />
@@ -1044,7 +1023,6 @@ function ProfilePage() {
             </button>
           </div>
         </section>
-        )}
       </main>
     </div>
   );

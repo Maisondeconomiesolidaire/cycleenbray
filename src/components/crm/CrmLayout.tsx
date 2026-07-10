@@ -7,6 +7,7 @@ import {
   useUser,
 } from "@clerk/clerk-react";
 import { AuthPanel } from "../AuthPanel";
+import { AppSwitcher } from "../AppSwitcher";
 import {
   ChevronDown,
   Menu,
@@ -197,12 +198,13 @@ function Sidebar({
   );
   return (
     <aside className="fixed inset-y-0 left-0 z-30 hidden w-64 flex-col border-r border-[var(--crm-border)] bg-[var(--crm-surface)] lg:flex">
-      <div className="flex h-16 items-center justify-center border-b border-[var(--crm-border)] px-5">
+      <div className="flex h-16 items-center justify-between gap-2 border-b border-[var(--crm-border)] px-5">
         <img
-          src="/recyclerie-logo.png"
-          alt="Recyclerie"
+          src="/cycle-en-bray-logo.webp"
+          alt="Cycle en Bray"
           className="h-11 w-auto object-contain"
         />
+        <AppSwitcher current="cycleenbray" />
       </div>
 
       <nav className="flex-1 space-y-2 overflow-y-auto p-3">
