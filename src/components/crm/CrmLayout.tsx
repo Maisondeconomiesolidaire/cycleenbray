@@ -132,12 +132,13 @@ function MobileTopBar({ onToggleTheme }: { onToggleTheme: () => void }) {
         </button>
 
         <img
-          src="/recyclerie-logo.png"
-          alt="Recyclerie"
+          src="/cycle-en-bray-logo.webp"
+          alt="Cycle en Bray"
           className="h-9 w-auto object-contain"
         />
 
-        <div className="flex min-w-[56px] items-center justify-end gap-2">
+        <div className="flex min-w-[56px] items-center justify-end gap-1.5">
+          <AppSwitcher current="cycleenbray" />
           {!onNotificationsPage && (unreadNotifications ?? 0) > 0 && (
             <span className="rounded-full bg-brand-500 px-2 py-0.5 text-[11px] font-semibold text-white">
               {unreadNotifications}
