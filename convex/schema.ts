@@ -1324,6 +1324,13 @@ export default defineSchema(
       assignedTo: v.optional(v.string()),
       notes: v.optional(v.string()),
     })),
+    fieldEdits: v.optional(
+      v.object({
+        customer: v.optional(v.object({ by: v.string(), at: v.number() })),
+        reebike: v.optional(v.object({ by: v.string(), at: v.number() })),
+        management: v.optional(v.object({ by: v.string(), at: v.number() })),
+      }),
+    ),
     pipelineStatus: v.union(
       v.literal("nouveau"),
       v.literal("validation"),

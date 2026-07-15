@@ -385,25 +385,33 @@ function Shop() {
       <ServiceCards />
 
       <main id="catalogue" className="mx-auto max-w-[92rem] px-5 py-10 sm:px-7 lg:px-8">
-        <div className="mb-6 flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
+        <div className="grid gap-6 lg:grid-cols-[280px_minmax(0,1fr)] lg:items-start xl:grid-cols-[300px_minmax(0,1fr)]">
+          <aside className="lg:sticky lg:top-24">
+            <div className="rounded-[28px] border border-zinc-200 bg-white p-5 shadow-[0_18px_45px_rgba(24,24,27,0.06)]">
+              <p className="text-sm font-semibold uppercase tracking-[0.16em] text-[#196b24]">Filtres</p>
+              <h2 className="mt-2 text-3xl font-semibold tracking-normal text-zinc-950">Velos disponibles</h2>
+              <div className="mt-5 space-y-5">
+                <FilterInput icon={<Search className="h-4 w-4" />} value={params.get("q") ?? ""} onChange={(value) => updateParam("q", value)} placeholder="Recherche" />
+                <FilterInput icon={<SlidersHorizontal className="h-4 w-4" />} value={params.get("max") ?? ""} onChange={(value) => updateParam("max", value)} placeholder="Prix max" />
+                <FilterRadioGroup title="Site" value={params.get("site") ?? ""} onChange={(value) => updateParam("site", value)} options={[["", "Tous les sites"], ...sites.map((site) => [site.value, site.label])]} />
+                <FilterRadioGroup title="Mode" value={params.get("mode") ?? ""} onChange={(value) => updateParam("mode", value)} options={[["", "Tous"], ...Object.entries(useModes)]} />
+                <FilterRadioGroup title="Categorie" value={params.get("category") ?? ""} onChange={(value) => updateParam("category", value)} options={[["", "Toutes"], ...categories.map((item) => [item, item])]} />
+                <FilterRadioGroup title="Profil" value={params.get("profile") ?? ""} onChange={(value) => updateParam("profile", value)} options={[["", "Tous"], ...profiles.map((item) => [item, item])]} />
+              </div>
+            </div>
+          </aside>
           <div>
-            <p className="text-sm font-semibold uppercase tracking-[0.16em] text-[#196b24]">Catalogue</p>
-            <h2 className="mt-2 text-3xl font-semibold tracking-normal">Velos disponibles</h2>
-          </div>
-          <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-6">
-            <FilterInput icon={<Search className="h-4 w-4" />} value={params.get("q") ?? ""} onChange={(value) => updateParam("q", value)} placeholder="Recherche" />
-            <FilterSelect value={params.get("site") ?? ""} onChange={(value) => updateParam("site", value)} options={sites.map((site) => [site.value, site.label])} placeholder="Tous sites" />
-            <FilterSelect value={params.get("mode") ?? ""} onChange={(value) => updateParam("mode", value)} options={Object.entries(useModes)} placeholder="Tous" />
-            <FilterSelect value={params.get("category") ?? ""} onChange={(value) => updateParam("category", value)} options={categories.map((item) => [item, item])} placeholder="Categorie" />
-            <FilterSelect value={params.get("profile") ?? ""} onChange={(value) => updateParam("profile", value)} options={profiles.map((item) => [item, item])} placeholder="Profil" />
-            <FilterInput icon={<SlidersHorizontal className="h-4 w-4" />} value={params.get("max") ?? ""} onChange={(value) => updateParam("max", value)} placeholder="Prix max" />
+            <div className="mb-6">
+              <p className="text-sm font-semibold uppercase tracking-[0.16em] text-[#196b24]">Catalogue</p>
+              <h2 className="mt-2 text-3xl font-semibold tracking-normal">Velos disponibles</h2>
+            </div>
+            {bikes === undefined ? <LoadingState /> : bikes.length === 0 ? <EmptyShop /> : (
+              <div className="grid gap-5 sm:grid-cols-2 lg:grid-cols-2 xl:grid-cols-3">
+                {bikes.map((bike) => <BikeCard key={bike._id} bike={bike} />)}
+              </div>
+            )}
           </div>
         </div>
-        {bikes === undefined ? <LoadingState /> : bikes.length === 0 ? <EmptyShop /> : (
-          <div className="grid gap-5 sm:grid-cols-2 lg:grid-cols-3">
-            {bikes.map((bike) => <BikeCard key={bike._id} bike={bike} />)}
-          </div>
-        )}
       </main>
     </>
   );
@@ -1055,9 +1063,9 @@ function Sidebar({ className, onClose }: { className?: string; onClose: () => vo
       <nav className="flex-1 space-y-2 overflow-y-auto p-3">
         <CrmNav to="/crm/stock" icon={<Package className="h-5 w-5" />} onClick={onClose}>Stock velos</CrmNav>
         <CrmNav to="/crm/suivi" icon={<ClipboardList className="h-5 w-5" />} onClick={onClose}>Suivi</CrmNav>
-        <CrmNav to="/boutique" icon={<Store className="h-5 w-5" />} onClick={onClose}>Boutique</CrmNav>
       </nav>
       <div className="border-t border-[var(--crm-border)] p-3">
+        <CrmNav to="/boutique" icon={<Store className="h-5 w-5" />} onClick={onClose}>Voir la boutique</CrmNav>
         <AccountSidebarCard onClick={onClose} />
       </div>
     </aside>
@@ -1630,17 +1638,20 @@ function BikeRequestDrawer({
 }) {
   const [tab, setTab] = useState<"demande" | "gestion" | "client">("demande");
   const updateRequest = useMutation(api.bikes.updateRequest);
+  const { user } = useUser();
   if (!request) return null;
   const processStep = request.processStep;
   const pipelineStatus = request.pipelineStatus;
   const isReebike = request.requestKind === "reebike";
   const isRepair = request.requestKind === "repair";
+  const actorName = user?.fullName ?? user?.primaryEmailAddress?.emailAddress ?? undefined;
 
   async function saveClient(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const data = new FormData(event.currentTarget);
     await updateRequest({
       id: request!._id,
+      actorName,
       customer: {
         firstName: String(data.get("firstName") ?? ""),
         lastName: String(data.get("lastName") ?? ""),
@@ -1657,6 +1668,7 @@ function BikeRequestDrawer({
     const siteValue = String(data.get("site") ?? "");
     await updateRequest({
       id: request!._id,
+      actorName,
       management: {
         site: siteValue === "60" || siteValue === "76" ? siteValue : undefined,
         assignedTo: String(data.get("assignedTo") ?? "") || undefined,
@@ -1670,6 +1682,7 @@ function BikeRequestDrawer({
     const data = new FormData(event.currentTarget);
     await updateRequest({
       id: request!._id,
+      actorName,
       reebike: {
         desiredAt: String(data.get("desiredAt") ?? ""),
         duration: String(data.get("duration") ?? "") || undefined,
@@ -1688,7 +1701,7 @@ function BikeRequestDrawer({
       onClose={onClose}
       variant="modal"
       panelClassName="border-0 shadow-[0_28px_90px_rgba(0,0,0,0.18)]"
-      bodyClassName="p-6 sm:p-7"
+      bodyClassName="p-0"
       headerClassName="border-b-0"
       headerStyle={{ backgroundColor: GREEN }}
       closeButtonClassName="text-white/78 hover:bg-black/10 hover:text-white"
@@ -1709,132 +1722,154 @@ function BikeRequestDrawer({
         </div>
       }
     >
-      <div className="mb-5 flex gap-2 border-b border-[var(--crm-border)]">
-        {(["demande", "gestion", "client"] as const).map((key) => (
-          <button key={key} onClick={() => setTab(key)} className={cn("border-b-2 px-3 py-2 text-sm font-semibold", tab === key ? "border-brand-500 text-zinc-950" : "border-transparent text-zinc-500")}>
-            {key === "demande" ? "Demande" : key === "gestion" ? "Gestion" : "Client"}
-          </button>
-        ))}
+      <div className="sticky top-0 z-20 border-b border-zinc-200 bg-white px-6 pt-3 sm:px-7">
+        <div className="flex gap-2">
+          {(["demande", "gestion", "client"] as const).map((key) => (
+            <button key={key} onClick={() => setTab(key)} className={cn("border-b-2 px-3 py-3 text-sm font-semibold", tab === key ? "border-brand-500 text-zinc-950" : "border-transparent text-zinc-500")}>
+              {key === "demande" ? "Demande" : key === "gestion" ? "Gestion" : "Client"}
+            </button>
+          ))}
+        </div>
       </div>
 
-      {tab === "demande" && (
-        isRepair ? (
-          <div className="grid gap-5 lg:grid-cols-[280px_1fr]">
-            <div className="rounded-lg border border-zinc-200 bg-white p-5">
-              <LogoMark className="mx-auto h-28 w-44" />
-            </div>
-            <div>
-              <h2 className="text-2xl font-semibold text-zinc-950">Demande de réparation</h2>
-              <div className="mt-5 grid gap-3 sm:grid-cols-2">
-                <DarkSpec label="Client" value={`${request.customer.firstName} ${request.customer.lastName}`} />
-                <DarkSpec label="Téléphone" value={request.customer.phone} />
-                <DarkSpec label="Email" value={request.customer.email} />
-                <DarkSpec label="Commentaire" value={request.customer.message} />
-              </div>
-            </div>
-          </div>
-        ) : isReebike ? (
-          <div className="grid gap-5 lg:grid-cols-[280px_1fr]">
-            <div className="rounded-lg border border-zinc-200 bg-white p-5">
-              <LogoMark className="mx-auto h-28 w-44" />
-              <RequestPhotoPreview ids={request.reebike?.compatibilityPhotos ?? []} />
-            </div>
-            <div>
-              <h2 className="text-2xl font-semibold text-zinc-950">Demande Reebike</h2>
-              <form className="mt-5 grid gap-3 sm:grid-cols-2" onSubmit={saveReebike}>
-                <CrmFieldInput label="Date souhaitee" name="desiredAt" type="datetime-local" defaultValue={request.reebike?.desiredAt ?? ""} />
-                <CrmFieldSelect name="duration" label="Duree" defaultValue={request.reebike?.duration ?? reebikeDurations[0]} options={reebikeDurations} />
-                <CrmFieldSelect name="formula" label="Formule" defaultValue={request.reebike?.formula ?? reebikeFormulas[0]} options={reebikeFormulas} />
-                <CrmFieldSelect name="frontBrake" label="Frein avant" defaultValue={request.reebike?.frontBrake ?? "Patins"} options={reebikeBrakeTypes} />
-                <CrmFieldSelect name="bikeType" label="Type de velo" defaultValue={request.reebike?.bikeType ?? "VTT"} options={reebikeBikeTypes} />
-                <CrmFieldSelect name="wheelSize" label="Taille de roue" defaultValue={request.reebike?.wheelSize ?? "24 pouces"} options={reebikeWheelSizes} />
-                <div className="sm:col-span-2">
-                  <button className="h-10 rounded-lg bg-[#196b24] px-4 text-sm font-semibold text-white">Enregistrer la demande</button>
+      <div className="space-y-6 px-6 pb-6 pt-6 sm:px-7 sm:pb-7">
+        {tab === "demande" && (
+          isRepair ? (
+            <div className="grid gap-6 xl:grid-cols-[minmax(0,1.2fr)_minmax(280px,0.8fr)]">
+              <div className="rounded-2xl border border-zinc-200 bg-white p-6 shadow-sm">
+                <h2 className="text-2xl font-semibold text-zinc-950">Demande de réparation</h2>
+                <div className="mt-5 grid gap-3 sm:grid-cols-2">
+                  <DarkSpec label="Client" value={`${request.customer.firstName} ${request.customer.lastName}`} />
+                  <DarkSpec label="Téléphone" value={request.customer.phone} />
+                  <DarkSpec label="Email" value={request.customer.email} />
+                  <DarkSpec label="Commentaire" value={request.customer.message} />
                 </div>
-              </form>
-            </div>
-          </div>
-        ) : (
-          <div className="grid gap-5 lg:grid-cols-[280px_1fr]">
-            <img src={request.bike ? bikeImage(request.bike) : fallbackImages[0]} alt="" className="aspect-[4/3] w-full rounded-lg object-cover" />
-            <div>
-              <h2 className="text-2xl font-semibold text-zinc-950">{request.bikeTitle}</h2>
-              <p className="mt-3 leading-7 text-zinc-600">{request.bike?.description}</p>
-              <div className="mt-5 grid grid-cols-2 gap-3">
-                <DarkSpec label="REF GDR" value={request.bikeGdrReference} />
-                <DarkSpec label="Site" value={request.bike?.site === "60" ? "Recyclerie 60" : "Recyclerie 76"} />
-                <DarkSpec label="Categorie" value={request.bike?.category} />
-                <DarkSpec label="Profil" value={request.bike?.sizeLabel} />
-                <DarkSpec label="Etat" value={request.bike?.condition} />
-                <DarkSpec label="Disponibilité" value={request.bike?.useMode === "rental" ? "Location" : "Achat"} />
-                <DarkSpec label="Prix" value={request.bike?.useMode === "rental" ? "Non applicable" : euro(request.bike?.price)} />
-                {request.rental && <DarkSpec label="Début location" value={new Date(`${request.rental.startDate}T12:00`).toLocaleDateString("fr-FR")} />}
-                {request.rental && <DarkSpec label="Fin location" value={new Date(`${request.rental.endDate}T12:00`).toLocaleDateString("fr-FR")} />}
+              </div>
+              <div className="rounded-2xl border border-zinc-200 bg-zinc-50 p-6">
+                <SectionHeading>Résumé</SectionHeading>
+                <DrawerMetaRow label="Créée le" value={new Date(request.createdAt).toLocaleDateString("fr-FR")} />
+                <DrawerMetaRow label="Dernière mise à jour" value={new Date(request.updatedAt).toLocaleString("fr-FR")} />
+                <DrawerMetaRow label="Statut" value={pipelineLabels[pipelineStatus]} />
               </div>
             </div>
-          </div>
-        )
-      )}
+          ) : isReebike ? (
+            <div className="grid gap-6 xl:grid-cols-[minmax(0,1.1fr)_minmax(280px,0.9fr)]">
+              <div className="rounded-2xl border border-zinc-200 bg-white p-6 shadow-sm">
+                <h2 className="text-2xl font-semibold text-zinc-950">Demande Reebike</h2>
+                <form className="mt-5 grid gap-3 sm:grid-cols-2" onSubmit={saveReebike}>
+                  <CrmFieldInput label="Date souhaitee" name="desiredAt" type="datetime-local" defaultValue={request.reebike?.desiredAt ?? ""} />
+                  <CrmFieldSelect name="duration" label="Duree" defaultValue={request.reebike?.duration ?? reebikeDurations[0]} options={reebikeDurations} />
+                  <CrmFieldSelect name="formula" label="Formule" defaultValue={request.reebike?.formula ?? reebikeFormulas[0]} options={reebikeFormulas} />
+                  <CrmFieldSelect name="frontBrake" label="Frein avant" defaultValue={request.reebike?.frontBrake ?? "Patins"} options={reebikeBrakeTypes} />
+                  <CrmFieldSelect name="bikeType" label="Type de velo" defaultValue={request.reebike?.bikeType ?? "VTT"} options={reebikeBikeTypes} />
+                  <CrmFieldSelect name="wheelSize" label="Taille de roue" defaultValue={request.reebike?.wheelSize ?? "24 pouces"} options={reebikeWheelSizes} />
+                  <div className="sm:col-span-2 flex items-center justify-between gap-3">
+                    <CycleFieldMeta edit={request.fieldEdits?.reebike} />
+                    <button className="h-10 rounded-lg bg-[#196b24] px-4 text-sm font-semibold text-white">Enregistrer la demande</button>
+                  </div>
+                </form>
+              </div>
+              <div className="rounded-2xl border border-zinc-200 bg-zinc-50 p-6">
+                <SectionHeading>Photos et compatibilité</SectionHeading>
+                <RequestPhotoPreview ids={request.reebike?.compatibilityPhotos ?? []} />
+              </div>
+            </div>
+          ) : (
+            <div className="grid gap-6 xl:grid-cols-[minmax(0,1.1fr)_minmax(280px,0.9fr)]">
+              <div className="rounded-2xl border border-zinc-200 bg-white p-6 shadow-sm">
+                <img src={request.bike ? bikeImage(request.bike) : fallbackImages[0]} alt="" className="aspect-[4/3] w-full rounded-xl object-cover" />
+                <h2 className="mt-5 text-2xl font-semibold text-zinc-950">{request.bikeTitle}</h2>
+                <p className="mt-3 leading-7 text-zinc-600">{request.bike?.description}</p>
+                <div className="mt-5 grid grid-cols-2 gap-3">
+                  <DarkSpec label="REF GDR" value={request.bikeGdrReference} />
+                  <DarkSpec label="Site" value={request.bike?.site === "60" ? "Recyclerie 60" : "Recyclerie 76"} />
+                  <DarkSpec label="Categorie" value={request.bike?.category} />
+                  <DarkSpec label="Profil" value={request.bike?.sizeLabel} />
+                  <DarkSpec label="Etat" value={request.bike?.condition} />
+                  <DarkSpec label="Disponibilité" value={request.bike?.useMode === "rental" ? "Location" : "Achat"} />
+                  <DarkSpec label="Prix" value={request.bike?.useMode === "rental" ? "Non applicable" : euro(request.bike?.price)} />
+                  {request.rental && <DarkSpec label="Début location" value={new Date(`${request.rental.startDate}T12:00`).toLocaleDateString("fr-FR")} />}
+                  {request.rental && <DarkSpec label="Fin location" value={new Date(`${request.rental.endDate}T12:00`).toLocaleDateString("fr-FR")} />}
+                </div>
+              </div>
+              <div className="rounded-2xl border border-zinc-200 bg-zinc-50 p-6">
+                <SectionHeading>Résumé</SectionHeading>
+                <DrawerMetaRow label="Créée le" value={new Date(request.createdAt).toLocaleDateString("fr-FR")} />
+                <DrawerMetaRow label="Dernière mise à jour" value={new Date(request.updatedAt).toLocaleString("fr-FR")} />
+                <DrawerMetaRow label="Statut" value={pipelineLabels[pipelineStatus]} />
+              </div>
+            </div>
+          )
+        )}
 
-      {tab === "gestion" && (
-        <div className="space-y-6">
-          <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-5">
-            {processSteps.map((step, index) => {
-              const stepIndex = index + 1;
-              const done = processStep >= stepIndex;
-              return (
-                <button
-                  key={step}
-                  onClick={() => {
-                    const nextStep = done ? Math.max(0, stepIndex - 1) : stepIndex;
-                    onPipeline(request._id, nextStep >= 5 ? "gagnee" : nextStep === 0 ? "nouveau" : "en_cours", nextStep);
-                  }}
-                  className={cn(
-                    "flex min-h-24 items-start gap-3 rounded-lg border p-3 text-left text-sm font-semibold transition",
-                    done ? "border-brand-500 bg-brand-500/14 text-zinc-950" : "border-[var(--crm-border)] bg-white text-zinc-600 hover:border-brand-500/50",
-                  )}
-                >
-                  <span className={cn("mt-0.5 flex h-6 w-6 shrink-0 items-center justify-center rounded border text-xs font-bold", done ? "border-[#196b24] bg-[#196b24] text-white" : "border-zinc-300 bg-white text-zinc-500")}>
-                    {done ? <Check className="h-4 w-4" /> : null}
-                  </span>
-                  {step}
-                </button>
-              );
-            })}
+        {tab === "gestion" && (
+          <div className="space-y-6">
+            <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-5">
+              {processSteps.map((step, index) => {
+                const stepIndex = index + 1;
+                const done = processStep >= stepIndex;
+                return (
+                  <button
+                    key={step}
+                    onClick={() => {
+                      const nextStep = done ? Math.max(0, stepIndex - 1) : stepIndex;
+                      onPipeline(request._id, nextStep >= 5 ? "gagnee" : nextStep === 0 ? "nouveau" : "en_cours", nextStep);
+                    }}
+                    className={cn(
+                      "flex min-h-24 items-start gap-3 rounded-2xl border p-4 text-left text-sm font-semibold transition",
+                      done ? "border-brand-500 bg-brand-500/14 text-zinc-950" : "border-[var(--crm-border)] bg-white text-zinc-600 hover:border-brand-500/50",
+                    )}
+                  >
+                    <span className={cn("mt-0.5 flex h-6 w-6 shrink-0 items-center justify-center rounded-full border text-xs font-bold", done ? "border-[#196b24] bg-[#196b24] text-white" : "border-zinc-300 bg-white text-zinc-500")}>
+                      {done ? <Check className="h-4 w-4" /> : null}
+                    </span>
+                    {step}
+                  </button>
+                );
+              })}
+            </div>
+            <form className="grid gap-3 rounded-2xl border border-[var(--crm-border)] bg-white p-5" onSubmit={saveManagement}>
+              <div className="grid gap-3 sm:grid-cols-2">
+                <CrmFieldSelect name="site" label="Site" defaultValue={request.management?.site ?? ""} options={["", "60", "76"]} labels={{ "": "Aucun", "60": "Recyclerie 60", "76": "Recyclerie 76" }} />
+                <CrmFieldInput name="assignedTo" label="Attribuée à" defaultValue={request.management?.assignedTo ?? ""} />
+              </div>
+              <label className="block text-sm font-medium text-zinc-700 sm:col-span-2">
+                Note
+                <textarea
+                  name="notes"
+                  defaultValue={request.management?.notes ?? ""}
+                  className="mt-1 min-h-24 w-full rounded-lg border border-zinc-200 bg-white px-3 py-2 text-sm text-zinc-950 outline-none focus:border-brand-500"
+                />
+              </label>
+              <div className="flex items-center justify-between gap-3">
+                <CycleFieldMeta edit={request.fieldEdits?.management} />
+                <button className="h-10 justify-self-start rounded-lg bg-[#196b24] px-4 text-sm font-semibold text-white">Enregistrer la note</button>
+              </div>
+            </form>
           </div>
-          <form className="grid gap-3 rounded-lg border border-[var(--crm-border)] bg-white p-4" onSubmit={saveManagement}>
+        )}
+
+        {tab === "client" && (
+          <form className="grid gap-3 sm:grid-cols-2" onSubmit={saveClient}>
+            <CrmFieldInput name="firstName" label="Prenom" defaultValue={request.customer.firstName} required />
+            <CrmFieldInput name="lastName" label="Nom" defaultValue={request.customer.lastName} required />
+            <CrmFieldInput name="email" label="Email" type="email" defaultValue={request.customer.email} required />
+            <CrmFieldInput name="phone" label="Telephone" defaultValue={request.customer.phone} required />
             <label className="block text-sm font-medium text-zinc-700 sm:col-span-2">
-              Note
+              Message client
               <textarea
-                name="notes"
-                defaultValue={request.management?.notes ?? ""}
-                className="mt-1 min-h-24 w-full rounded-lg border border-zinc-200 bg-white px-3 py-2 text-sm text-zinc-950 outline-none focus:border-brand-500"
+                name="message"
+                defaultValue={request.customer.message ?? ""}
+                className="mt-1 min-h-28 w-full rounded-lg border border-zinc-200 bg-white px-3 py-2 text-sm text-zinc-950 outline-none focus:border-brand-500"
               />
             </label>
-            <button className="h-10 justify-self-start rounded-lg bg-[#196b24] px-4 text-sm font-semibold text-white">Enregistrer la note</button>
+            <div className="sm:col-span-2 flex items-center justify-between gap-3">
+              <CycleFieldMeta edit={request.fieldEdits?.customer} />
+              <button className="h-10 rounded-lg bg-[#196b24] px-4 text-sm font-semibold text-white">Enregistrer le client</button>
+            </div>
           </form>
-        </div>
-      )}
-
-      {tab === "client" && (
-        <form className="grid gap-3 sm:grid-cols-2" onSubmit={saveClient}>
-          <CrmFieldInput name="firstName" label="Prenom" defaultValue={request.customer.firstName} required />
-          <CrmFieldInput name="lastName" label="Nom" defaultValue={request.customer.lastName} required />
-          <CrmFieldInput name="email" label="Email" type="email" defaultValue={request.customer.email} required />
-          <CrmFieldInput name="phone" label="Telephone" defaultValue={request.customer.phone} required />
-          <label className="block text-sm font-medium text-zinc-700 sm:col-span-2">
-            Message client
-            <textarea
-              name="message"
-              defaultValue={request.customer.message ?? ""}
-              className="mt-1 min-h-28 w-full rounded-lg border border-zinc-200 bg-white px-3 py-2 text-sm text-zinc-950 outline-none focus:border-brand-500"
-            />
-          </label>
-          <div className="sm:col-span-2">
-            <button className="h-10 rounded-lg bg-[#196b24] px-4 text-sm font-semibold text-white">Enregistrer le client</button>
-          </div>
-        </form>
-      )}
+        )}
+      </div>
     </Drawer>
   );
 }
@@ -1953,8 +1988,25 @@ function FilterInput({ icon, value, onChange, placeholder }: { icon: ReactNode; 
   return <label className="flex h-11 items-center gap-2 rounded-lg border border-zinc-200 bg-white px-3 text-sm text-zinc-500">{icon}<input className="min-w-0 bg-transparent text-zinc-950 outline-none placeholder:text-zinc-600" value={value} onChange={(event) => onChange(event.target.value)} placeholder={placeholder} /></label>;
 }
 
-function FilterSelect({ value, onChange, options, placeholder }: { value: string; onChange: (value: string) => void; options: string[][]; placeholder: string }) {
-  return <select className="h-11 rounded-lg border border-zinc-200 bg-white px-3 text-sm text-zinc-800 outline-none" value={value} onChange={(event) => onChange(event.target.value)}><option value="">{placeholder}</option>{options.map(([val, label]) => <option key={val} value={val}>{label}</option>)}</select>;
+function FilterRadioGroup({ title, value, onChange, options }: { title: string; value: string; onChange: (value: string) => void; options: string[][] }) {
+  return (
+    <fieldset>
+      <legend className="text-xs font-semibold uppercase tracking-[0.14em] text-zinc-500">{title}</legend>
+      <div className="mt-2 space-y-2">
+        {options.map(([optionValue, label]) => (
+          <label key={`${title}-${optionValue || "all"}`} className="flex cursor-pointer items-center gap-3 rounded-xl border border-zinc-200 px-3 py-2.5 text-sm text-zinc-700 transition hover:border-zinc-300 hover:bg-zinc-50">
+            <input
+              type="radio"
+              checked={value === optionValue}
+              onChange={() => onChange(optionValue)}
+              className="h-4 w-4 border-zinc-300 text-[#196b24] focus:ring-[#196b24]/30"
+            />
+            <span className="font-medium">{label}</span>
+          </label>
+        ))}
+      </div>
+    </fieldset>
+  );
 }
 
 function DarkInlineInput({ icon, value, onChange, placeholder }: { icon: ReactNode; value: string; onChange: (value: string) => void; placeholder: string }) {
@@ -2219,6 +2271,39 @@ function Spec({ label, value }: { label: string; value?: string }) {
 
 function DarkSpec({ label, value }: { label: string; value?: string }) {
   return <div className="rounded-lg border border-zinc-200 bg-white p-4"><p className="text-xs font-semibold uppercase tracking-[0.14em] text-zinc-500">{label}</p><p className="mt-2 font-medium text-zinc-900">{value ?? "Non renseigne"}</p></div>;
+}
+
+function SectionHeading({ children }: { children: ReactNode }) {
+  return <h3 className="text-xs font-semibold uppercase tracking-[0.14em] text-zinc-500">{children}</h3>;
+}
+
+function DrawerMetaRow({ label, value }: { label: string; value?: string }) {
+  if (!value) return null;
+  return (
+    <div className="flex items-center justify-between gap-4 border-b border-zinc-200 py-2 text-sm last:border-b-0">
+      <span className="text-zinc-500">{label}</span>
+      <span className="text-right font-medium text-zinc-900">{value}</span>
+    </div>
+  );
+}
+
+function formatRelativeLite(ts: number) {
+  const diff = Date.now() - ts;
+  const minute = 60_000;
+  const hour = 60 * minute;
+  const day = 24 * hour;
+  if (diff < hour) return `il y a ${Math.max(1, Math.round(diff / minute))} min`;
+  if (diff < day) return `il y a ${Math.round(diff / hour)} h`;
+  return `il y a ${Math.round(diff / day)} j`;
+}
+
+function CycleFieldMeta({ edit }: { edit?: { by: string; at: number } }) {
+  if (!edit?.by) return <span />;
+  return (
+    <p className="text-[11px] text-zinc-500">
+      Modifie par <span className="font-medium text-zinc-700">{edit.by}</span> · {formatRelativeLite(edit.at)}
+    </p>
+  );
 }
 
 function Badge({ children }: { children: ReactNode }) {
