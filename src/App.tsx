@@ -389,13 +389,17 @@ function Shop() {
           <aside className="lg:sticky lg:top-24">
             <div className="rounded-[28px] border border-zinc-200 bg-white p-5 shadow-[0_18px_45px_rgba(24,24,27,0.06)]">
               <p className="text-sm font-semibold uppercase tracking-[0.16em] text-[#196b24]">Filtres</p>
-              <h2 className="mt-2 text-3xl font-semibold tracking-normal text-zinc-950">Velos disponibles</h2>
               <div className="mt-5 space-y-5">
                 <FilterInput icon={<Search className="h-4 w-4" />} value={params.get("q") ?? ""} onChange={(value) => updateParam("q", value)} placeholder="Recherche" />
                 <FilterInput icon={<SlidersHorizontal className="h-4 w-4" />} value={params.get("max") ?? ""} onChange={(value) => updateParam("max", value)} placeholder="Prix max" />
                 <FilterRadioGroup title="Site" value={params.get("site") ?? ""} onChange={(value) => updateParam("site", value)} options={[["", "Tous les sites"], ...sites.map((site) => [site.value, site.label])]} />
                 <FilterRadioGroup title="Mode" value={params.get("mode") ?? ""} onChange={(value) => updateParam("mode", value)} options={[["", "Tous"], ...Object.entries(useModes)]} />
-                <FilterRadioGroup title="Categorie" value={params.get("category") ?? ""} onChange={(value) => updateParam("category", value)} options={[["", "Toutes"], ...categories.map((item) => [item, item])]} />
+                <div>
+                  <p className="text-xs font-semibold uppercase tracking-[0.14em] text-zinc-500">Categorie</p>
+                  <div className="mt-2">
+                    <FilterSelect value={params.get("category") ?? ""} onChange={(value) => updateParam("category", value)} options={categories.map((item) => [item, item])} placeholder="Toutes" />
+                  </div>
+                </div>
                 <FilterRadioGroup title="Profil" value={params.get("profile") ?? ""} onChange={(value) => updateParam("profile", value)} options={[["", "Tous"], ...profiles.map((item) => [item, item])]} />
               </div>
             </div>
