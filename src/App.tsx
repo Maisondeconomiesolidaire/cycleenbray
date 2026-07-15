@@ -515,30 +515,23 @@ function ServiceCards() {
       <div className="grid gap-5 md:grid-cols-2">
         {/* Reebike */}
         <div className="flex flex-col overflow-hidden rounded-[28px] border border-[#196b24]/15 bg-gradient-to-br from-[#eef7f1] via-white to-[#e3f2e8] p-7 shadow-[0_20px_55px_rgba(25,107,36,0.12)] sm:p-9">
-          <span className="flex h-12 w-12 items-center justify-center rounded-2xl bg-[#196b24] text-white shadow-sm">
-            <Bike className="h-6 w-6" />
-          </span>
-          <p className="mt-5 text-xs font-bold uppercase tracking-[0.18em] text-[#196b24]">Reebike · Roue électrique</p>
-          <h3 className="mt-2 text-2xl font-semibold text-zinc-950">Passez à l'électrique sans changer de vélo</h3>
+          <p className="text-xs font-bold uppercase tracking-[0.18em] text-[#196b24]">Reebike · Roue électrique</p>
+          <h3 className="mt-3 text-3xl font-semibold leading-tight text-zinc-950 sm:text-[2.35rem]">Passez à l'électrique sans changer de vélo</h3>
           <p className="mt-3 text-sm leading-6 text-zinc-600">
             La roue électrique Reebike transforme votre vélo classique en vélo à assistance électrique :
             installation simple et réversible, autonomie confortable, à la location ou à l'achat.
           </p>
           <Link
             to="/reebike"
-            className="mt-auto inline-flex w-fit items-center gap-2 rounded-full bg-[#196b24] px-6 py-3 pt-3 text-sm font-bold text-white shadow-[0_14px_34px_rgba(25,107,36,0.3)] transition hover:-translate-y-0.5"
+            className="mt-auto inline-flex w-fit items-center rounded-full bg-[#196b24] px-6 py-3 pt-3 text-sm font-bold text-white shadow-[0_14px_34px_rgba(25,107,36,0.3)] transition hover:-translate-y-0.5"
           >
             Demander un Reebike
-            <ChevronRight className="h-4 w-4" />
           </Link>
         </div>
 
         {/* Réparation & entretien */}
         <div className="flex flex-col overflow-hidden rounded-[28px] border border-black/5 bg-white p-7 shadow-[0_20px_55px_rgba(24,24,27,0.08)] sm:p-9">
-          <span className="flex h-12 w-12 items-center justify-center rounded-2xl bg-zinc-900 text-white shadow-sm">
-            <ShieldCheck className="h-6 w-6" />
-          </span>
-          <h3 className="mt-5 text-2xl font-semibold text-zinc-950">Réparation &amp; entretien</h3>
+          <h3 className="text-3xl font-semibold leading-tight text-zinc-950 sm:text-[2.35rem]">Réparation &amp; entretien</h3>
           <p className="mt-3 text-sm leading-6 text-zinc-600">
             Cycl'en Bray propose la réparation, l'entretien et le diagnostic complet de tous types de vélos.
           </p>
@@ -548,14 +541,13 @@ function ServiceCards() {
               "Remplacement de pièces (pneus, freins, chaîne, câbles…)",
               "Révision complète et réglages personnalisés",
             ].map((item) => (
-              <li key={item} className="flex items-start gap-2">
-                <Check className="mt-0.5 h-4 w-4 shrink-0 text-[#196b24]" />
-                <span>{item}</span>
+              <li key={item} className="pl-4 leading-6 before:mr-3 before:ml-[-1rem] before:text-[#196b24] before:content-['•']">
+                {item}
               </li>
             ))}
           </ul>
           <div className="mt-4 rounded-2xl border border-amber-200 bg-amber-50 p-4">
-            <p className="text-sm font-bold text-amber-900">🛠️ Bonus Répar Cycle</p>
+            <p className="text-sm font-bold text-amber-900">Bonus Répar Cycle</p>
             <p className="mt-1 text-sm leading-6 text-amber-800">
               Profitez du dispositif national Bonus Répar Cycle pour réduire le coût de votre intervention !
               Renseignez-vous directement auprès de notre équipe.
@@ -563,10 +555,9 @@ function ServiceCards() {
           </div>
           <Link
             to="/reparation"
-            className="mt-6 inline-flex w-fit items-center gap-2 rounded-full bg-zinc-900 px-6 py-3 text-sm font-bold text-white shadow-[0_14px_34px_rgba(24,24,27,0.22)] transition hover:-translate-y-0.5"
+            className="mt-6 inline-flex w-fit items-center rounded-full bg-zinc-900 px-6 py-3 text-sm font-bold text-white shadow-[0_14px_34px_rgba(24,24,27,0.22)] transition hover:-translate-y-0.5"
           >
             Demander une réparation
-            <ChevronRight className="h-4 w-4" />
           </Link>
         </div>
       </div>
