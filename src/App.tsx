@@ -1992,6 +1992,10 @@ function FilterInput({ icon, value, onChange, placeholder }: { icon: ReactNode; 
   return <label className="flex h-11 items-center gap-2 rounded-lg border border-zinc-200 bg-white px-3 text-sm text-zinc-500">{icon}<input className="min-w-0 bg-transparent text-zinc-950 outline-none placeholder:text-zinc-600" value={value} onChange={(event) => onChange(event.target.value)} placeholder={placeholder} /></label>;
 }
 
+function FilterSelect({ value, onChange, options, placeholder }: { value: string; onChange: (value: string) => void; options: string[][]; placeholder: string }) {
+  return <select className="h-11 w-full rounded-xl border border-zinc-200 bg-white px-3 text-sm text-zinc-800 outline-none transition hover:border-zinc-300 focus:border-[#196b24]" value={value} onChange={(event) => onChange(event.target.value)}><option value="">{placeholder}</option>{options.map(([val, label]) => <option key={val} value={val}>{label}</option>)}</select>;
+}
+
 function FilterRadioGroup({ title, value, onChange, options }: { title: string; value: string; onChange: (value: string) => void; options: string[][] }) {
   return (
     <fieldset>
