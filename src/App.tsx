@@ -3,11 +3,14 @@ import {
   type InputHTMLAttributes,
   type ReactNode,
   type TextareaHTMLAttributes,
+  useEffect,
+  useMemo,
   useRef,
   useState,
 } from "react";
 import { SignedIn, SignedOut, useClerk, useUser } from "@clerk/clerk-react";
 import { AuthPanel } from "./components/AuthPanel";
+import { AppSwitcher } from "./components/AppSwitcher";
 import { useMutation, useQuery } from "convex/react";
 import {
   Bike,
@@ -378,6 +381,9 @@ function Shop() {
         <img src="/hero.avif" alt="" className="block h-[240px] w-full object-cover sm:h-[300px] lg:h-[360px]" />
       </section>
 
+      <NewArrivals />
+      <ServiceCards />
+
       <main id="catalogue" className="mx-auto max-w-[92rem] px-5 py-10 sm:px-7 lg:px-8">
         <div className="mb-6 flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
           <div>
@@ -400,6 +406,171 @@ function Shop() {
         )}
       </main>
     </>
+  );
+}
+
+/** Slider « Nouvelles arrivées » : fait défiler les 3 derniers vélos ajoutés. */
+function NewArrivals() {
+  const bikes = useQuery(api.bikes.listPublic, {});
+  const latest = useMemo(() => (bikes ?? []).slice(0, 3), [bikes]);
+  const [index, setIndex] = useState(0);
+
+  useEffect(() => {
+    if (latest.length <= 1) return;
+    const timer = setInterval(() => setIndex((current) => (current + 1) % latest.length), 5000);
+    return () => clearInterval(timer);
+  }, [latest.length]);
+
+  useEffect(() => {
+    if (index > latest.length - 1) setIndex(0);
+  }, [index, latest.length]);
+
+  if (bikes === undefined || latest.length === 0) return null;
+
+  const safeIndex = Math.min(index, latest.length - 1);
+  const go = (next: number) => setIndex((next + latest.length) % latest.length);
+
+  return (
+    <section className="mx-auto max-w-[92rem] px-5 pt-10 sm:px-7 lg:px-8">
+      <div className="mb-4 flex items-center gap-2">
+        <Bike className="h-5 w-5 text-[#196b24]" />
+        <p className="text-sm font-semibold uppercase tracking-[0.16em] text-[#196b24]">Nouvelles arrivées</p>
+      </div>
+
+      <div className="relative overflow-hidden rounded-[28px] border border-black/5 bg-zinc-950 shadow-[0_28px_80px_rgba(24,24,27,0.18)]">
+        <div
+          className="flex transition-transform duration-700 ease-[cubic-bezier(0.25,0.46,0.45,0.94)]"
+          style={{ transform: `translateX(-${safeIndex * 100}%)` }}
+        >
+          {latest.map((bike) => (
+            <Link
+              key={bike._id}
+              to={`/velos/${bike._id}`}
+              className="group relative block aspect-[16/10] w-full shrink-0 overflow-hidden sm:aspect-[21/9]"
+            >
+              <img
+                src={bikeImage(bike)}
+                alt={bike.title}
+                className="h-full w-full object-cover transition-transform duration-700 group-hover:scale-105"
+              />
+              <div className="absolute inset-0 bg-gradient-to-t from-black/75 via-black/25 to-transparent" />
+              <div className="absolute inset-x-0 bottom-0 flex flex-col gap-2 p-6 sm:p-10">
+                <span className="w-fit rounded-full bg-[#196b24] px-3 py-1 text-[11px] font-bold uppercase tracking-[0.16em] text-white shadow-sm">
+                  {bike.category} · {bike.site === "60" ? "Recyclerie 60" : "Recyclerie 76"}
+                </span>
+                <h3 className="max-w-2xl text-2xl font-semibold leading-tight text-white sm:text-4xl">
+                  {shopBikeTitle(bike)}
+                </h3>
+                <p className="text-xl font-bold text-white sm:text-2xl">
+                  {bike.useMode === "rental" ? "Location" : euro(bike.price)}
+                </p>
+              </div>
+            </Link>
+          ))}
+        </div>
+
+        {latest.length > 1 && (
+          <>
+            <button
+              type="button"
+              onClick={() => go(safeIndex - 1)}
+              aria-label="Vélo précédent"
+              className="absolute left-4 top-1/2 z-10 flex h-11 w-11 -translate-y-1/2 items-center justify-center rounded-full bg-white/90 text-zinc-900 shadow-lg backdrop-blur transition hover:bg-white"
+            >
+              <ChevronLeft className="h-5 w-5" />
+            </button>
+            <button
+              type="button"
+              onClick={() => go(safeIndex + 1)}
+              aria-label="Vélo suivant"
+              className="absolute right-4 top-1/2 z-10 flex h-11 w-11 -translate-y-1/2 items-center justify-center rounded-full bg-white/90 text-zinc-900 shadow-lg backdrop-blur transition hover:bg-white"
+            >
+              <ChevronRight className="h-5 w-5" />
+            </button>
+            <div className="absolute inset-x-0 bottom-5 z-10 flex items-center justify-center gap-2">
+              {latest.map((bike, dotIndex) => (
+                <button
+                  key={bike._id}
+                  type="button"
+                  onClick={() => go(dotIndex)}
+                  aria-label={`Aller au vélo ${dotIndex + 1}`}
+                  className={cn(
+                    "h-2 rounded-full transition-all",
+                    dotIndex === safeIndex ? "w-7 bg-white" : "w-2 bg-white/50 hover:bg-white/80",
+                  )}
+                />
+              ))}
+            </div>
+          </>
+        )}
+      </div>
+    </section>
+  );
+}
+
+/** Deux cartes de présentation sous le slider : Reebike & Réparation. */
+function ServiceCards() {
+  return (
+    <section className="mx-auto max-w-[92rem] px-5 pt-8 sm:px-7 lg:px-8">
+      <div className="grid gap-5 md:grid-cols-2">
+        {/* Reebike */}
+        <div className="flex flex-col overflow-hidden rounded-[28px] border border-[#196b24]/15 bg-gradient-to-br from-[#eef7f1] via-white to-[#e3f2e8] p-7 shadow-[0_20px_55px_rgba(25,107,36,0.12)] sm:p-9">
+          <span className="flex h-12 w-12 items-center justify-center rounded-2xl bg-[#196b24] text-white shadow-sm">
+            <Bike className="h-6 w-6" />
+          </span>
+          <p className="mt-5 text-xs font-bold uppercase tracking-[0.18em] text-[#196b24]">Reebike · Roue électrique</p>
+          <h3 className="mt-2 text-2xl font-semibold text-zinc-950">Passez à l'électrique sans changer de vélo</h3>
+          <p className="mt-3 text-sm leading-6 text-zinc-600">
+            La roue électrique Reebike transforme votre vélo classique en vélo à assistance électrique :
+            installation simple et réversible, autonomie confortable, à la location ou à l'achat.
+          </p>
+          <Link
+            to="/reebike"
+            className="mt-auto inline-flex w-fit items-center gap-2 rounded-full bg-[#196b24] px-6 py-3 pt-3 text-sm font-bold text-white shadow-[0_14px_34px_rgba(25,107,36,0.3)] transition hover:-translate-y-0.5"
+          >
+            Demander un Reebike
+            <ChevronRight className="h-4 w-4" />
+          </Link>
+        </div>
+
+        {/* Réparation & entretien */}
+        <div className="flex flex-col overflow-hidden rounded-[28px] border border-black/5 bg-white p-7 shadow-[0_20px_55px_rgba(24,24,27,0.08)] sm:p-9">
+          <span className="flex h-12 w-12 items-center justify-center rounded-2xl bg-zinc-900 text-white shadow-sm">
+            <ShieldCheck className="h-6 w-6" />
+          </span>
+          <h3 className="mt-5 text-2xl font-semibold text-zinc-950">Réparation &amp; entretien</h3>
+          <p className="mt-3 text-sm leading-6 text-zinc-600">
+            Cycl'en Bray propose la réparation, l'entretien et le diagnostic complet de tous types de vélos.
+          </p>
+          <ul className="mt-4 space-y-2 text-sm text-zinc-700">
+            {[
+              "Vélos classiques, électriques, VTT, vélos enfants",
+              "Remplacement de pièces (pneus, freins, chaîne, câbles…)",
+              "Révision complète et réglages personnalisés",
+            ].map((item) => (
+              <li key={item} className="flex items-start gap-2">
+                <Check className="mt-0.5 h-4 w-4 shrink-0 text-[#196b24]" />
+                <span>{item}</span>
+              </li>
+            ))}
+          </ul>
+          <div className="mt-4 rounded-2xl border border-amber-200 bg-amber-50 p-4">
+            <p className="text-sm font-bold text-amber-900">🛠️ Bonus Répar Cycle</p>
+            <p className="mt-1 text-sm leading-6 text-amber-800">
+              Profitez du dispositif national Bonus Répar Cycle pour réduire le coût de votre intervention !
+              Renseignez-vous directement auprès de notre équipe.
+            </p>
+          </div>
+          <Link
+            to="/reparation"
+            className="mt-6 inline-flex w-fit items-center gap-2 rounded-full bg-zinc-900 px-6 py-3 text-sm font-bold text-white shadow-[0_14px_34px_rgba(24,24,27,0.22)] transition hover:-translate-y-0.5"
+          >
+            Demander une réparation
+            <ChevronRight className="h-4 w-4" />
+          </Link>
+        </div>
+      </div>
+    </section>
   );
 }
 
@@ -870,7 +1041,10 @@ function CrmLayout() {
                 <Menu className="h-5 w-5" />
               </button>
               <LogoMark className="h-10 w-32" />
-              <Link to="/crm/profil"><UserAvatar /></Link>
+              <div className="flex items-center gap-1">
+                <AppSwitcher current="cycleenbray" />
+                <Link to="/crm/profil"><UserAvatar /></Link>
+              </div>
             </div>
             <Outlet />
           </div>
@@ -883,8 +1057,9 @@ function CrmLayout() {
 function Sidebar({ className, onClose }: { className?: string; onClose: () => void }) {
   return (
     <aside className={cn("fixed inset-y-0 left-0 z-30 w-64 flex-col border-r border-[var(--crm-border)] bg-[var(--crm-surface)]", className)}>
-      <div className="flex h-16 items-center justify-center border-b border-[var(--crm-border)] px-5">
-        <LogoMark className="h-12 w-44" />
+      <div className="flex h-16 items-center justify-between gap-2 border-b border-[var(--crm-border)] px-5">
+        <LogoMark className="h-12 w-40" />
+        <AppSwitcher current="cycleenbray" />
       </div>
       <nav className="flex-1 space-y-2 overflow-y-auto p-3">
         <CrmNav to="/crm/stock" icon={<Package className="h-5 w-5" />} onClick={onClose}>Stock velos</CrmNav>
