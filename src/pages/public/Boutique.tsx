@@ -11,6 +11,7 @@ import { EmptyState } from "../../components/ui/EmptyState";
 import { HScroll } from "../../components/ui/HScroll";
 import { SparklesText } from "../../components/ui/SparklesText";
 import {
+  ARTICLE_CATEGORY_SLUGS,
   ARTICLE_SLUG_TO_CATEGORY,
 } from "../../lib/constants";
 import { useCart } from "../../lib/useCart";
@@ -47,6 +48,7 @@ function useWishlist() {
 export function Boutique() {
   const { slug } = useParams<{ slug?: string }>();
   const [searchParams] = useSearchParams();
+  const navigate = useNavigate();
   const search = searchParams.get("q") ?? "";
   const activeCategory = slug ? ARTICLE_SLUG_TO_CATEGORY[slug] : undefined;
 
@@ -75,6 +77,41 @@ export function Boutique() {
       return matchesSearch;
     });
   }, [articles, search]);
+
+  const categoryCounts = useMemo(() => {
+    const counts = new Map<string, number>();
+    for (const article of articles ?? []) {
+      counts.set(article.category, (counts.get(article.category) ?? 0) + 1);
+    }
+    return counts;
+  }, [articles]);
+
+  const categoryOptions = useMemo(
+    () =>
+      Object.entries(ARTICLE_CATEGORY_SLUGS)
+        .map(([label, value]) => ({
+          label,
+          value,
+          count: categoryCounts.get(label) ?? 0,
+        }))
+        .filter((option) => option.count > 0 || option.label === activeCategory),
+    [activeCategory, categoryCounts],
+  );
+
+  const totalCount = filteredArticles?.length ?? 0;
+
+  function handleCategoryChange(nextCategory?: string) {
+    const nextSearch = search.trim();
+    const params = new URLSearchParams();
+    if (nextSearch) params.set("q", nextSearch);
+    const query = params.toString();
+    if (!nextCategory) {
+      navigate(`/boutique${query ? `?${query}` : ""}`);
+      return;
+    }
+    const nextSlug = ARTICLE_CATEGORY_SLUGS[nextCategory];
+    navigate(`/boutique/categorie/${nextSlug}${query ? `?${query}` : ""}`);
+  }
 
   return (
     <div className="relative bg-transparent">
@@ -106,7 +143,40 @@ export function Boutique() {
       )}
 
       <section className="mx-auto w-full max-w-[92rem] px-5 py-8 sm:px-7 lg:px-8">
-        <div>
+        <div className="grid gap-6 lg:grid-cols-[280px_minmax(0,1fr)] lg:items-start xl:grid-cols-[300px_minmax(0,1fr)]">
+          <aside className="lg:sticky lg:top-24">
+            <div className="rounded-[28px] border border-white/40 bg-white/72 p-5 shadow-[0_18px_45px_rgba(24,24,27,0.08)] backdrop-blur-md">
+              <p className="text-xs font-semibold uppercase tracking-[0.18em] text-zinc-500">
+                Filtres
+              </p>
+              <h2 className="mt-2 text-2xl font-bold tracking-tight text-zinc-950">
+                Boutique vélos
+              </h2>
+              <p className="mt-2 text-sm leading-6 text-zinc-600">
+                Gardez les filtres visibles pendant votre navigation et changez de famille en un clic.
+              </p>
+
+              <div className="mt-6 space-y-2">
+                <CategoryRadio
+                  checked={!activeCategory}
+                  label="Tous les articles"
+                  count={totalCount}
+                  onChange={() => handleCategoryChange(undefined)}
+                />
+                {categoryOptions.map((option) => (
+                  <CategoryRadio
+                    key={option.value}
+                    checked={activeCategory === option.label}
+                    label={option.label}
+                    count={option.count}
+                    onChange={() => handleCategoryChange(option.label)}
+                  />
+                ))}
+              </div>
+            </div>
+          </aside>
+
+          <div>
             <div className="mb-5 flex flex-col gap-2 sm:flex-row sm:items-end sm:justify-between sm:gap-4">
               <div>
                 <p className="text-xs font-semibold uppercase tracking-[0.18em] text-zinc-500">
@@ -116,8 +186,8 @@ export function Boutique() {
                   {activeCategory ?? "Tous les articles"}
                 </h2>
                 <p className="mt-1 text-sm text-zinc-600">
-                  {filteredArticles?.length ?? 0} article
-                  {(filteredArticles?.length ?? 0) > 1 ? "s" : ""}
+                  {totalCount} article
+                  {totalCount > 1 ? "s" : ""}
                 </p>
               </div>
             </div>
@@ -144,9 +214,39 @@ export function Boutique() {
                 ))}
               </div>
             )}
+          </div>
         </div>
       </section>
     </div>
+  );
+}
+
+function CategoryRadio({
+  checked,
+  label,
+  count,
+  onChange,
+}: {
+  checked: boolean;
+  label: string;
+  count: number;
+  onChange: () => void;
+}) {
+  return (
+    <label className="flex cursor-pointer items-center justify-between gap-3 rounded-2xl border border-zinc-200/80 bg-white px-4 py-3 text-sm text-zinc-700 transition hover:border-zinc-300 hover:bg-zinc-50">
+      <span className="flex min-w-0 items-center gap-3">
+        <input
+          type="radio"
+          checked={checked}
+          onChange={onChange}
+          className="h-4 w-4 border-zinc-300 text-zinc-900 focus:ring-zinc-400"
+        />
+        <span className="truncate font-medium">{label}</span>
+      </span>
+      <span className="rounded-full bg-zinc-100 px-2 py-1 text-xs font-semibold text-zinc-500">
+        {count}
+      </span>
+    </label>
   );
 }
 

@@ -13,6 +13,7 @@ import {
   Menu,
   Sun,
   Moon,
+  Store,
 } from "lucide-react";
 import { cn } from "../../lib/cn";
 import { api } from "../../../convex/_generated/api";
@@ -20,6 +21,7 @@ import { Drawer } from "../ui/Drawer";
 import { GlobalScanner } from "./GlobalScanner";
 import { CRM_PAGES, canAccess } from "../../lib/crmPermissions";
 import type { CrmPageKey } from "../../lib/crmPermissions";
+import { PersonaProvider } from "../../lib/persona";
 
 export const ThemeContext = createContext(true); // true = dark
 export function useThemeContext() { return useContext(ThemeContext); }
@@ -89,14 +91,16 @@ export function CrmLayout() {
     <ThemeContext.Provider value={isDark}>
     <div className={isDark ? "dark" : "crm-light"}>
       <SignedIn>
-        <div className="min-h-screen bg-[var(--crm-bg)] text-zinc-100 flex transition-colors duration-200">
-          <Sidebar isDark={isDark} onToggleTheme={toggle} />
-          <div className="flex-1 min-w-0 lg:pl-64">
-            <MobileTopBar onToggleTheme={toggle} />
-            <Outlet />
+        <PersonaProvider>
+          <div className="min-h-screen bg-[var(--crm-bg)] text-zinc-100 flex transition-colors duration-200">
+            <Sidebar isDark={isDark} onToggleTheme={toggle} />
+            <div className="flex-1 min-w-0 lg:pl-64">
+              <MobileTopBar onToggleTheme={toggle} />
+              <Outlet />
+            </div>
           </div>
-        </div>
-        <GlobalScanner />
+          <GlobalScanner />
+        </PersonaProvider>
       </SignedIn>
       <SignedOut>
         <SignInScreen />
@@ -167,6 +171,14 @@ function MobileTopBar({ onToggleTheme }: { onToggleTheme: () => void }) {
             itemClassName="py-3"
           />
           <div className="border-t border-[var(--crm-border)] pt-1 mt-1">
+            <Link
+              to="/boutique"
+              onClick={() => setOpen(false)}
+              className="flex w-full items-center gap-3 rounded-lg px-3 py-3 text-sm font-medium text-zinc-400 transition-colors hover:bg-[var(--crm-surface-2)] hover:text-zinc-100"
+            >
+              <Store className="h-5 w-5" />
+              <span>Voir la boutique</span>
+            </Link>
             <button
               type="button"
               onClick={() => { onToggleTheme(); setOpen(false); }}
@@ -218,6 +230,13 @@ function Sidebar({
       </nav>
 
       <div className="border-t border-[var(--crm-border)] p-3 space-y-2">
+        <Link
+          to="/boutique"
+          className="flex w-full items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium text-zinc-400 transition-colors hover:bg-[var(--crm-surface-2)] hover:text-zinc-100"
+        >
+          <Store className="h-4 w-4 shrink-0" />
+          <span className="truncate">Voir la boutique</span>
+        </Link>
         <Link to="/compte" className="flex items-center gap-3 rounded-lg bg-[var(--crm-surface-2)] px-3 py-2 transition-colors hover:bg-[var(--crm-surface-3)]">
           <span className="flex h-9 w-9 shrink-0 items-center justify-center overflow-hidden rounded-full bg-brand-500 text-xs font-semibold text-white">
             {user?.imageUrl ? <img src={user.imageUrl} alt="" className="h-full w-full object-cover" /> : (user?.fullName ?? "Moi").slice(0, 2).toUpperCase()}

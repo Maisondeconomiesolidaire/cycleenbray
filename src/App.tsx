@@ -519,7 +519,7 @@ function ServiceCards() {
           <h3 className="mt-3 text-3xl font-semibold leading-tight text-zinc-950 sm:text-[2.35rem]">Passez à l'électrique sans changer de vélo</h3>
           <p className="mt-3 text-sm leading-6 text-zinc-600">
             La roue électrique Reebike transforme votre vélo classique en vélo à assistance électrique :
-            installation simple et réversible, autonomie confortable, à la location ou à l'achat.
+            installation simple et réversible, autonomie confortable, à la location.
           </p>
           <Link
             to="/reebike"

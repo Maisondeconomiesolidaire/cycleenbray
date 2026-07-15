@@ -48,10 +48,12 @@ export function RequestDocumentsPanel({
   requestId,
   theme = "dark",
   viewerRole = "staff",
+  customerName: _customerName,
 }: {
   requestId: Id<"requests">;
   theme?: "dark" | "light";
   viewerRole?: "staff" | "client";
+  customerName?: string;
 }) {
   const documents = useQuery(api.documents.listForRequest, { requestId });
   const addDocument = useMutation(api.documents.addToRequest);

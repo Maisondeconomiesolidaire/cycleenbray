@@ -1,19 +1,25 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { useMutation, useQuery } from "convex/react";
 import { useUser } from "@clerk/clerk-react";
 import { format } from "date-fns";
 import { fr } from "date-fns/locale";
 import { useUpload } from "../../lib/useUpload";
+import { downloadImage } from "../../lib/downloadImage";
 import {
   CalendarDays,
   MapPin,
   PackageOpen,
+  Pencil,
+  Plus,
   XCircle,
   RotateCcw,
   Check,
   ImagePlus,
   Loader2,
   MessageSquareText,
+  Trash2,
+  Eye,
+  Download,
 } from "lucide-react";
 import { api } from "../../../convex/_generated/api";
 import { Id } from "../../../convex/_generated/dataModel";
@@ -30,6 +36,8 @@ import { MessageThread } from "../MessageThread";
 import { RequestDocumentsPanel } from "../RequestDocumentsPanel";
 import { useCrmAccess } from "./RequireCrmPermission";
 import { canAccess } from "../../lib/crmPermissions";
+import { usePersona } from "../../lib/persona";
+import { formatRelative } from "../../lib/format";
 import { Modal } from "../ui/Modal";
 import { TypeBadge } from "./TypeBadge";
 import { PhoneInput } from "../ui/PhoneInput";
@@ -40,11 +48,16 @@ import {
   OUTCOME_LABELS,
   COLLECTE_TYPE_OPTIONS,
   COLLECTE_TYPE_LABELS,
+  COLLECTE_CATEGORIES,
   COLLECTE_CATEGORY_BY_KEY,
   CollecteType,
   TYPE_COLORS,
   SITE_LABELS,
   Site,
+  AERO_OBJECT_TYPES,
+  WOOD_TYPES,
+  STRIPPING_OPTIONS,
+  COATING_OPTIONS,
 } from "../../lib/constants";
 import { STEP } from "../../../convex/processes";
 import { formatDateTime, formatPrice } from "../../lib/format";
@@ -52,6 +65,17 @@ import { cn } from "../../lib/cn";
 
 type RequestDoc = NonNullable<ReturnType<typeof useQuery<typeof api.requests.get>>>;
 type Tab = "demande" | "gestion" | "calculDevis" | "documents" | "client" | "messages";
+
+/** Affiche la date programmée avec l'heure (sauf si minuit = heure non renseignée). */
+function formatScheduledDate(timestamp: number) {
+  const date = new Date(timestamp);
+  const hasTime = date.getHours() !== 0 || date.getMinutes() !== 0;
+  return format(
+    date,
+    hasTime ? "EEEE d MMMM yyyy 'à' HH'h'mm" : "EEEE d MMMM yyyy",
+    { locale: fr },
+  );
+}
 
 const TABS: { key: Tab; label: string }[] = [
   { key: "demande", label: "Demande" },
@@ -84,10 +108,15 @@ export function RequestDrawer({
   );
   const setOutcome = useMutation(api.requests.setOutcome);
   const setComplete = useMutation(api.requests.setComplete);
+  const deleteForever = useMutation(api.requests.deleteForever);
   const access = useCrmAccess();
   const canUpdate = canAccess(access, "demandes", "update");
+  const canDeleteForever = access?.email === "lahmerselim@gmail.com";
   const [tab, setTab] = useState<Tab>("demande");
   const [cancelOpen, setCancelOpen] = useState(false);
+  const [deleteOpen, setDeleteOpen] = useState(false);
+  const [deleting, setDeleting] = useState(false);
+  const [deleteError, setDeleteError] = useState("");
   const [lostReason, setLostReason] = useState<LostReasonValue | "">("");
   const [lostReasonDetails, setLostReasonDetails] = useState("");
   const [cancelError, setCancelError] = useState("");
@@ -112,7 +141,7 @@ export function RequestDrawer({
       onClose={onClose}
       variant="modal"
       panelClassName="border-0 shadow-[0_28px_90px_rgba(0,0,0,0.18)]"
-      bodyClassName="p-6 sm:p-7"
+      bodyClassName="p-0"
       headerClassName={request ? "border-b-0" : "border-b-0"}
       headerStyle={
         request ? { backgroundColor: TYPE_COLORS[request.type] } : undefined
@@ -151,41 +180,60 @@ export function RequestDrawer({
               </span>
             </div>
 
-            <div className={cn("ml-auto flex items-center gap-2 pl-3", !canUpdate && "hidden")}>
-              <Checkbox
-                checked={request.complete}
-                onChange={(e) =>
-                  setComplete({ id: request._id, complete: e.target.checked })
-                }
-                label="Complète"
-                variant="inline"
-                className="border-white/24 bg-white/10 px-3 py-1.5 text-white hover:border-white/40 hover:bg-white/14 [&_.min-w-0>span]:text-white [&_.text-transparent]:border-white/45"
-              />
+            <div className={cn("ml-auto flex items-center gap-2 pl-3", !canUpdate && !canDeleteForever && "hidden")}>
+              {canUpdate && (
+                <>
+                  <Checkbox
+                    checked={request.complete}
+                    onChange={(e) =>
+                      setComplete({ id: request._id, complete: e.target.checked })
+                    }
+                    label="Complète"
+                    variant="inline"
+                    className="border-white/24 bg-white/10 px-3 py-1.5 text-white hover:border-white/40 hover:bg-white/14 [&_.min-w-0>span]:text-white [&_.text-transparent]:border-white/45"
+                  />
 
-              {request.outcome === "perdue" ? (
-                <Button
-                  variant="outline"
-                  size="sm"
-                  className="border-white/28 bg-black/10 text-white hover:bg-black/18 hover:text-white"
-                  onClick={() => setOutcome({ id: request._id, outcome: "open" })}
-                >
-                  <RotateCcw className="h-4 w-4" />
-                  Rouvrir
-                </Button>
-              ) : (
+                  {request.outcome === "perdue" ? (
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      className="border-white/28 bg-black/10 text-white hover:bg-black/18 hover:text-white"
+                      onClick={() => setOutcome({ id: request._id, outcome: "open" })}
+                    >
+                      <RotateCcw className="h-4 w-4" />
+                      Rouvrir
+                    </Button>
+                  ) : (
+                    <Button
+                      variant="danger"
+                      size="sm"
+                      className="border border-red-400/30 bg-red-600 text-white hover:bg-red-700 hover:text-white"
+                      onClick={() => {
+                        setLostReason((request.lostReason as LostReasonValue | undefined) ?? "");
+                        setLostReasonDetails(request.lostReasonDetails ?? "");
+                        setCancelError("");
+                        setCancelOpen(true);
+                      }}
+                    >
+                      <XCircle className="h-4 w-4" />
+                      Perdue
+                    </Button>
+                  )}
+                </>
+              )}
+
+              {canDeleteForever && (
                 <Button
                   variant="danger"
                   size="sm"
-                  className="border border-red-400/30 bg-red-600 text-white hover:bg-red-700 hover:text-white"
+                  className="border border-red-300/35 bg-red-950/45 text-white hover:bg-red-900/70 hover:text-white"
                   onClick={() => {
-                    setLostReason((request.lostReason as LostReasonValue | undefined) ?? "");
-                    setLostReasonDetails(request.lostReasonDetails ?? "");
-                    setCancelError("");
-                    setCancelOpen(true);
+                    setDeleteError("");
+                    setDeleteOpen(true);
                   }}
                 >
-                  <XCircle className="h-4 w-4" />
-                  Perdue
+                  <Trash2 className="h-4 w-4" />
+                  Supprimer
                 </Button>
               )}
             </div>
@@ -201,46 +249,118 @@ export function RequestDrawer({
         </div>
       ) : (
         <div>
-          {/* Onglets */}
-          <UnderlineTabs
-            items={visibleTabs}
-            value={activeTab}
-            onChange={setTab}
-            className="mb-5"
-            size="sm"
-          />
-
-          {activeTab === "demande" && <DemandeTab request={request} />}
-          {activeTab === "gestion" && (
-            <GestionTab
-              request={request}
-              collecteUndefined={!!collecteUndefined}
-              canUpdate={canUpdate}
+          {/* Onglets — collés en haut du panneau pendant le défilement. */}
+          <div className="sticky top-0 z-20 border-b border-zinc-800 bg-[var(--crm-surface)] px-6 pt-3 sm:px-7">
+            <UnderlineTabs
+              items={visibleTabs}
+              value={activeTab}
+              onChange={setTab}
+              className="border-b-0 [&_button]:pb-3"
+              size="sm"
             />
-          )}
-          {activeTab === "calculDevis" && request.type === "aerogommage" && (
-            <AeroQuoteCalculator key={request._id} request={request} />
-          )}
-          {activeTab === "calculDevis" && isC3Collecte && (
-            <C3QuoteCalculator key={request._id} request={request} />
-          )}
-          {activeTab === "documents" && (
-            <div className="space-y-4">
-              {(request.type === "collecte" || request.type === "aerogommage") && (
-                <PhotoRequestButton request={request} />
-              )}
-              <RequestDocumentsPanel requestId={request._id} theme="dark" viewerRole="staff" />
-            </div>
-          )}
-          {activeTab === "client" && (
-            <ClientTab key={request._id} request={request} canUpdate={canUpdate} />
-          )}
-          {activeTab === "messages" && (
-            <div className="h-[60vh]">
-              <MessageThread requestId={request._id} viewerRole="staff" theme="dark" />
-            </div>
-          )}
+          </div>
+
+          <div className="px-6 pb-6 pt-6 sm:px-7 sm:pb-7">
+            {activeTab === "demande" && (
+              <DemandeTab request={request} canUpdate={canUpdate} />
+            )}
+            {activeTab === "gestion" && (
+              <GestionTab
+                request={request}
+                collecteUndefined={!!collecteUndefined}
+                canUpdate={canUpdate}
+              />
+            )}
+            {activeTab === "calculDevis" && request.type === "aerogommage" && (
+              <AeroQuoteCalculator key={request._id} request={request} />
+            )}
+            {activeTab === "calculDevis" && isC3Collecte && (
+              <C3QuoteCalculator key={request._id} request={request} />
+            )}
+            {activeTab === "documents" && (
+              <div className="space-y-4">
+                {(request.type === "collecte" || request.type === "aerogommage") && (
+                  <PhotoRequestButton request={request} />
+                )}
+                <RequestDocumentsPanel
+                  requestId={request._id}
+                  theme="dark"
+                  viewerRole="staff"
+                  customerName={[request.customer.firstName, request.customer.lastName]
+                    .filter(Boolean)
+                    .join(" ")}
+                />
+              </div>
+            )}
+            {activeTab === "client" && (
+              <ClientTab key={request._id} request={request} canUpdate={canUpdate} />
+            )}
+            {activeTab === "messages" && (
+              <div className="h-[60vh]">
+                <MessageThread requestId={request._id} viewerRole="staff" theme="dark" />
+              </div>
+            )}
+          </div>
         </div>
+      )}
+
+      {request && (
+        <Modal
+          dark
+          open={deleteOpen}
+          onClose={() => {
+            if (!deleting) setDeleteOpen(false);
+          }}
+          title="Supprimer définitivement"
+          className="max-w-md border-0 shadow-[0_28px_90px_rgba(0,0,0,0.18)]"
+          headerClassName="border-b-0"
+        >
+          <div className="space-y-4">
+            <p className="text-sm text-zinc-300">
+              Cette action supprime définitivement la demande
+              {request.reference ? ` #${request.reference}` : ""}, ses messages,
+              notifications, documents rattachés et photos propres à la demande.
+            </p>
+            {deleteError && (
+              <p className="rounded-lg border border-red-500/30 bg-red-500/10 p-3 text-sm text-red-200">
+                {deleteError}
+              </p>
+            )}
+            <div className="flex justify-end gap-2 pt-2">
+              <Button
+                variant="outline"
+                onClick={() => setDeleteOpen(false)}
+                disabled={deleting}
+              >
+                Retour
+              </Button>
+              <Button
+                variant="danger"
+                disabled={deleting}
+                onClick={async () => {
+                  setDeleting(true);
+                  setDeleteError("");
+                  try {
+                    await deleteForever({ id: request._id });
+                    setDeleteOpen(false);
+                    onClose();
+                  } catch (error) {
+                    setDeleteError(
+                      error instanceof Error
+                        ? error.message
+                        : "La suppression a échoué.",
+                    );
+                  } finally {
+                    setDeleting(false);
+                  }
+                }}
+              >
+                {deleting ? <Loader2 className="h-4 w-4 animate-spin" /> : <Trash2 className="h-4 w-4" />}
+                Supprimer définitivement
+              </Button>
+            </div>
+          </div>
+        </Modal>
       )}
 
       {request && (
@@ -325,8 +445,75 @@ export function RequestDrawer({
 
 /* ------------------------------------------------------------------ Demande */
 
-function DemandeTab({ request }: { request: RequestDoc }) {
+type AeroItemForm = {
+  objectType: string;
+  label: string;
+  height: string;
+  width: string;
+  depth: string;
+  quantity: string;
+  woodType: string;
+  stripping: string;
+  coating: string;
+  coatingOther: string;
+  comment: string;
+  photos?: Id<"_storage">[];
+};
+
+type AeroDetailsForm = {
+  comment: string;
+  pickupAtHome: boolean;
+  deliveryAtHome: boolean;
+  items: AeroItemForm[];
+};
+
+function aeroItemToForm(item?: NonNullable<RequestDoc["aerogommage"]>[number]): AeroItemForm {
+  return {
+    objectType: item?.objectType ?? "",
+    label: item?.label ?? "",
+    height: item?.height !== undefined ? String(item.height) : "",
+    width: item?.width !== undefined ? String(item.width) : "",
+    depth: item?.depth !== undefined ? String(item.depth) : "",
+    quantity: item?.quantity !== undefined ? String(item.quantity) : "",
+    woodType: item?.woodType ?? "",
+    stripping: item?.stripping ?? "",
+    coating: item?.coating ?? "",
+    coatingOther: item?.coatingOther ?? "",
+    comment: item?.comment ?? "",
+    photos: item?.photos ?? [],
+  };
+}
+
+function aeroRequestToForm(request: RequestDoc): AeroDetailsForm {
+  const items = request.aerogommage?.length
+    ? request.aerogommage.map(aeroItemToForm)
+    : [aeroItemToForm()];
+  const legacyPickup = request.aerogommage?.some((item) => item.retrieval) ?? false;
+  const legacyDelivery = request.aerogommage?.some((item) => item.delivery) ?? false;
+  return {
+    comment: request.comment ?? "",
+    pickupAtHome: request.aerogommageOptions?.pickupAtHome ?? legacyPickup,
+    deliveryAtHome: request.aerogommageOptions?.deliveryAtHome ?? legacyDelivery,
+    items,
+  };
+}
+
+function parseOptionalPositiveNumber(value: string) {
+  const trimmed = value.trim();
+  if (!trimmed) return undefined;
+  const parsed = Number(trimmed);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : undefined;
+}
+
+function DemandeTab({
+  request,
+  canUpdate,
+}: {
+  request: RequestDoc;
+  canUpdate: boolean;
+}) {
   const [lb, setLb] = useState<number | null>(null);
+  const [editingAero, setEditingAero] = useState(false);
 
   const meta = (
     <>
@@ -359,8 +546,10 @@ function DemandeTab({ request }: { request: RequestDoc }) {
         </section>
       )}
 
-      {request.type === "aerogommage" && (
-        <AerogommageProgressPhotos request={request} />
+      {request.type === "aerogommage" &&
+        ((request.beforePhotoUrls?.length ?? 0) > 0 ||
+          (request.afterPhotoUrls?.length ?? 0) > 0) && (
+        <AerogommageProgressPhotos request={request} canUpdate={false} />
       )}
 
       <p className="text-xs text-zinc-600">
@@ -386,6 +575,36 @@ function DemandeTab({ request }: { request: RequestDoc }) {
     );
   }
 
+  if (request.type === "aerogommage") {
+    return (
+      <div className="space-y-6">
+        <div className="flex items-center justify-end">
+          {canUpdate && !editingAero && (
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={() => setEditingAero(true)}
+            >
+              <Pencil className="h-4 w-4" />
+              Modifier
+            </Button>
+          )}
+        </div>
+        {editingAero ? (
+          <AerogommageEditForm
+            request={request}
+            onCancel={() => setEditingAero(false)}
+            onSaved={() => setEditingAero(false)}
+          />
+        ) : (
+          <RequestDetails request={request} canUpdate={canUpdate} />
+        )}
+        {meta}
+      </div>
+    );
+  }
+
   return (
     <div className="space-y-6">
       <RequestDetails request={request} />
@@ -394,7 +613,321 @@ function DemandeTab({ request }: { request: RequestDoc }) {
   );
 }
 
-function AerogommageProgressPhotos({ request }: { request: RequestDoc }) {
+function AerogommageEditForm({
+  request,
+  onCancel,
+  onSaved,
+}: {
+  request: RequestDoc;
+  onCancel: () => void;
+  onSaved: () => void;
+}) {
+  const update = useMutation(api.requests.updateAerogommageDetails);
+  const { user } = useUser();
+  const persona = usePersona();
+  const actorName =
+    persona ?? user?.fullName ?? user?.primaryEmailAddress?.emailAddress ?? undefined;
+  const [form, setForm] = useState<AeroDetailsForm>(() => aeroRequestToForm(request));
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+
+  function setRoot<K extends keyof AeroDetailsForm>(key: K, value: AeroDetailsForm[K]) {
+    setForm((prev) => ({ ...prev, [key]: value }));
+    setError("");
+  }
+
+  function setItem(index: number, key: keyof AeroItemForm, value: string) {
+    setForm((prev) => ({
+      ...prev,
+      items: prev.items.map((item, i) =>
+        i === index ? { ...item, [key]: value } : item,
+      ),
+    }));
+    setError("");
+  }
+
+  function addItem() {
+    setForm((prev) => ({ ...prev, items: [...prev.items, aeroItemToForm()] }));
+    setError("");
+  }
+
+  function removeItem(index: number) {
+    setForm((prev) => ({
+      ...prev,
+      items: prev.items.filter((_, i) => i !== index),
+    }));
+    setError("");
+  }
+
+  async function save() {
+    if (form.items.length === 0) {
+      setError("Ajoutez au moins un objet.");
+      return;
+    }
+
+    setSaving(true);
+    setError("");
+    try {
+      const customerAddress = {
+        address: request.customer.address,
+        postalCode: request.customer.postalCode,
+        city: request.customer.city,
+      };
+      await update({
+        id: request._id,
+        actorName,
+        comment: form.comment.trim() || undefined,
+        aerogommageOptions: {
+          pickupAtHome: form.pickupAtHome,
+          deliveryAtHome: form.deliveryAtHome,
+          pickupAddress: form.pickupAtHome ? customerAddress : undefined,
+          deliveryAddress: form.deliveryAtHome ? customerAddress : undefined,
+        },
+        items: form.items.map((item) => ({
+          objectType: item.objectType.trim() || undefined,
+          label: item.label.trim() || undefined,
+          height: parseOptionalPositiveNumber(item.height),
+          width: parseOptionalPositiveNumber(item.width),
+          depth: parseOptionalPositiveNumber(item.depth),
+          quantity: parseOptionalPositiveNumber(item.quantity),
+          woodType: item.woodType.trim() || undefined,
+          stripping: item.stripping.trim() || undefined,
+          coating: item.coating.trim() || undefined,
+          coatingOther: item.coatingOther.trim() || undefined,
+          comment: item.comment.trim() || undefined,
+          photos: item.photos ?? [],
+        })),
+      });
+      onSaved();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Enregistrement impossible.");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <section className="space-y-5 rounded-2xl border border-[var(--crm-border)] bg-[var(--crm-surface-2)] p-4">
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+        <div>
+          <SectionTitle>Modifier la demande client</SectionTitle>
+          <p className="text-xs text-zinc-500">
+            Les photos ne sont pas modifiées ici.
+          </p>
+        </div>
+        <div className="flex gap-2">
+          <Button type="button" variant="outline" size="sm" onClick={onCancel}>
+            Annuler
+          </Button>
+          <Button type="button" size="sm" onClick={save} disabled={saving}>
+            {saving ? <Loader2 className="h-4 w-4 animate-spin" /> : <Check className="h-4 w-4" />}
+            Enregistrer
+          </Button>
+        </div>
+      </div>
+
+      {error && (
+        <p className="rounded-xl border border-red-500/30 bg-red-500/10 p-3 text-sm text-red-200">
+          {error}
+        </p>
+      )}
+
+      <Field label="Commentaire général">
+        <Textarea
+          value={form.comment}
+          onChange={(e) => setRoot("comment", e.target.value)}
+          placeholder="Commentaire renseigné par le client…"
+        />
+      </Field>
+
+      <section>
+        <SectionTitle>Transport</SectionTitle>
+        <div className="grid gap-3 sm:grid-cols-2">
+          <Checkbox
+            label="Retrait à domicile"
+            checked={form.pickupAtHome}
+            onChange={(e) => setRoot("pickupAtHome", e.target.checked)}
+            className="border-[var(--crm-border)] bg-[var(--crm-surface)] hover:bg-[var(--crm-surface-3)]"
+          />
+          <Checkbox
+            label="Livraison à domicile"
+            checked={form.deliveryAtHome}
+            onChange={(e) => setRoot("deliveryAtHome", e.target.checked)}
+            className="border-[var(--crm-border)] bg-[var(--crm-surface)] hover:bg-[var(--crm-surface-3)]"
+          />
+        </div>
+      </section>
+
+      <section className="space-y-4">
+        <div className="flex items-center justify-between gap-3">
+          <SectionTitle>Objets à aérogommer</SectionTitle>
+          <Button type="button" variant="outline" size="sm" onClick={addItem}>
+            <Plus className="h-4 w-4" />
+            Ajouter
+          </Button>
+        </div>
+
+        {form.items.map((item, index) => {
+          const isOtherType = item.objectType === "Autre (veuillez préciser)";
+          const isOtherCoating = item.coating === "Autre (précisez)";
+          return (
+            <div
+              key={index}
+              className="space-y-4 rounded-xl border border-[var(--crm-border)] bg-[var(--crm-surface)] p-4"
+            >
+              <div className="flex items-center justify-between gap-3">
+                <p className="text-sm font-semibold text-zinc-200">
+                  Objet {index + 1}
+                </p>
+                {form.items.length > 1 && (
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    className="text-red-300 hover:text-red-200"
+                    onClick={() => removeItem(index)}
+                  >
+                    <Trash2 className="h-4 w-4" />
+                    Retirer
+                  </Button>
+                )}
+              </div>
+
+              <div className="grid gap-4 sm:grid-cols-2">
+                <Field label="Type d'objet">
+                  <Select
+                    value={item.objectType}
+                    onChange={(e) => setItem(index, "objectType", e.target.value)}
+                  >
+                    <option value="">Sélectionner…</option>
+                    {AERO_OBJECT_TYPES.map((type) => (
+                      <option key={type} value={type}>
+                        {type}
+                      </option>
+                    ))}
+                  </Select>
+                </Field>
+                {isOtherType && (
+                  <Field label="Précisez l'objet">
+                    <Input
+                      value={item.label}
+                      onChange={(e) => setItem(index, "label", e.target.value)}
+                    />
+                  </Field>
+                )}
+              </div>
+
+              <div className="grid grid-cols-2 gap-4 sm:grid-cols-4">
+                <Field label="Hauteur (cm)">
+                  <Input
+                    type="number"
+                    step="any"
+                    min="0"
+                    value={item.height}
+                    onChange={(e) => setItem(index, "height", e.target.value)}
+                  />
+                </Field>
+                <Field label="Largeur (cm)">
+                  <Input
+                    type="number"
+                    step="any"
+                    min="0"
+                    value={item.width}
+                    onChange={(e) => setItem(index, "width", e.target.value)}
+                  />
+                </Field>
+                <Field label="Profondeur (cm)">
+                  <Input
+                    type="number"
+                    step="any"
+                    min="0"
+                    value={item.depth}
+                    onChange={(e) => setItem(index, "depth", e.target.value)}
+                  />
+                </Field>
+                <Field label="Quantité">
+                  <Input
+                    type="number"
+                    step="1"
+                    min="1"
+                    value={item.quantity}
+                    onChange={(e) => setItem(index, "quantity", e.target.value)}
+                  />
+                </Field>
+              </div>
+
+              <div className="grid gap-4 sm:grid-cols-2">
+                <Field label="Nature du bois">
+                  <Select
+                    value={item.woodType}
+                    onChange={(e) => setItem(index, "woodType", e.target.value)}
+                  >
+                    <option value="">Sélectionner…</option>
+                    {WOOD_TYPES.map((type) => (
+                      <option key={type} value={type}>
+                        {type}
+                      </option>
+                    ))}
+                  </Select>
+                </Field>
+                <Field label="Décapage">
+                  <Select
+                    value={item.stripping}
+                    onChange={(e) => setItem(index, "stripping", e.target.value)}
+                  >
+                    <option value="">Sélectionner…</option>
+                    {STRIPPING_OPTIONS.map((type) => (
+                      <option key={type} value={type}>
+                        {type}
+                      </option>
+                    ))}
+                  </Select>
+                </Field>
+                <Field label="Revêtement">
+                  <Select
+                    value={item.coating}
+                    onChange={(e) => setItem(index, "coating", e.target.value)}
+                  >
+                    <option value="">Sélectionner…</option>
+                    {COATING_OPTIONS.map((type) => (
+                      <option key={type} value={type}>
+                        {type}
+                      </option>
+                    ))}
+                  </Select>
+                </Field>
+                {isOtherCoating && (
+                  <Field label="Précisez le revêtement">
+                    <Input
+                      value={item.coatingOther}
+                      onChange={(e) => setItem(index, "coatingOther", e.target.value)}
+                    />
+                  </Field>
+                )}
+              </div>
+
+              <Field label="Commentaire objet">
+                <Textarea
+                  value={item.comment}
+                  onChange={(e) => setItem(index, "comment", e.target.value)}
+                  placeholder="Précisions sur cet objet…"
+                />
+              </Field>
+            </div>
+          );
+        })}
+      </section>
+    </section>
+  );
+}
+
+function AerogommageProgressPhotos({
+  request,
+  canUpdate = true,
+}: {
+  request: RequestDoc;
+  canUpdate?: boolean;
+}) {
   const patchManagement = useMutation(api.requests.patchManagement);
   const upload = useUpload();
   const [beforeOpen, setBeforeOpen] = useState<number | null>(null);
@@ -443,8 +976,9 @@ function AerogommageProgressPhotos({ request }: { request: RequestDoc }) {
         urls={request.beforePhotoUrls ?? []}
         uploading={uploadingKind === "before"}
         onAdd={(files) => addPhotos("before", files)}
-        onRemove={(index) => removePhoto("before", index)}
+        onRemove={canUpdate ? (index) => removePhoto("before", index) : undefined}
         onOpen={setBeforeOpen}
+        canUpdate={canUpdate}
       />
 
       <ManagedRequestPhotoBlock
@@ -452,8 +986,9 @@ function AerogommageProgressPhotos({ request }: { request: RequestDoc }) {
         urls={request.afterPhotoUrls ?? []}
         uploading={uploadingKind === "after"}
         onAdd={(files) => addPhotos("after", files)}
-        onRemove={(index) => removePhoto("after", index)}
+        onRemove={canUpdate ? (index) => removePhoto("after", index) : undefined}
         onOpen={setAfterOpen}
+        canUpdate={canUpdate}
       />
 
       {beforeOpen !== null && (
@@ -482,14 +1017,18 @@ function ManagedRequestPhotoBlock({
   onAdd,
   onRemove,
   onOpen,
+  canUpdate = true,
 }: {
   title: string;
   urls: string[];
   uploading: boolean;
   onAdd: (files: FileList | null) => void;
-  onRemove: (index: number) => void;
+  onRemove?: (index: number) => void;
   onOpen: (index: number) => void;
+  canUpdate?: boolean;
 }) {
+  if (urls.length === 0 && !canUpdate) return null;
+
   return (
     <div>
       <SectionTitle>{title}</SectionTitle>
@@ -501,6 +1040,7 @@ function ManagedRequestPhotoBlock({
           className="mb-3"
         />
       )}
+      {canUpdate && (
       <label
         className={cn(
           "flex w-full cursor-pointer items-center justify-center gap-2 rounded-2xl border border-dashed px-4 py-4 text-sm font-medium transition-colors",
@@ -532,6 +1072,7 @@ function ManagedRequestPhotoBlock({
           }}
         />
       </label>
+      )}
     </div>
   );
 }
@@ -548,6 +1089,13 @@ function PhotoGrid({
   onRemove?: (i: number) => void;
   className?: string;
 }) {
+  // Couleurs en style inline : garantit un texte foncé sur fond blanc quel que
+  // soit le thème (le préfixe `!` de Tailwind v3 n'est plus honoré en v4 et
+  // laissait le texte hériter d'une couleur claire → blanc sur blanc).
+  const imageActionClass =
+    "inline-flex w-full max-w-[9rem] items-center justify-center gap-1.5 rounded-lg border border-zinc-200 px-2.5 py-1.5 text-xs font-semibold shadow-sm transition";
+  const imageActionStyle = { backgroundColor: "#ffffff", color: "#09090b" } as const;
+
   return (
     <div className={cn("grid grid-cols-2 gap-2 sm:grid-cols-4", className)}>
       {urls.map((url, i) => (
@@ -555,13 +1103,31 @@ function PhotoGrid({
           key={`${url}-${i}`}
           className="group relative aspect-square overflow-hidden rounded-lg border border-[var(--crm-border)]"
         >
-          <button
-            type="button"
-            onClick={() => onOpen(i)}
-            className="h-full w-full hover:opacity-90"
-          >
-            <img src={url} alt="" className="h-full w-full object-cover" />
-          </button>
+          <img
+            src={url}
+            alt=""
+            loading="lazy"
+            decoding="async"
+            className="h-full w-full object-cover"
+          />
+          <div className="absolute inset-0 flex flex-col items-center justify-center gap-1.5 bg-black/55 p-2 opacity-0 transition-opacity group-hover:opacity-100">
+            <button
+              type="button"
+              onClick={() => onOpen(i)}
+              className={imageActionClass}
+              style={imageActionStyle}
+            >
+              <Eye className="h-3.5 w-3.5" /> Voir l'image
+            </button>
+            <button
+              type="button"
+              onClick={() => downloadImage(url)}
+              className={imageActionClass}
+              style={imageActionStyle}
+            >
+              <Download className="h-3.5 w-3.5" /> Télécharger l'image
+            </button>
+          </div>
           {onRemove && (
             <button
               type="button"
@@ -575,6 +1141,162 @@ function PhotoGrid({
         </div>
       ))}
     </div>
+  );
+}
+
+/* ----------------------------------------------- Photos objets (collecte) */
+
+/**
+ * Photos des objets d'une collecte, groupées par catégorie. L'équipe peut en
+ * ajouter elle-même : « Ajouter une photo » ouvre le sélecteur de catégorie
+ * (pictogrammes), puis on importe des images pour la catégorie choisie.
+ */
+function CollecteCategoryPhotos({ request }: { request: RequestDoc }) {
+  const access = useCrmAccess();
+  const canUpdate = canAccess(access, "demandes", "update");
+  const addPhotos = useMutation(api.requests.addCollecteCategoryPhotos);
+  const removePhoto = useMutation(api.requests.removeCollecteCategoryPhoto);
+  const upload = useUpload();
+  const inputRef = useRef<HTMLInputElement>(null);
+  const pendingCategory = useRef<string | null>(null);
+  const [pickerOpen, setPickerOpen] = useState(false);
+  const [uploading, setUploading] = useState(false);
+  const [lb, setLb] = useState<{ urls: string[]; index: number } | null>(null);
+
+  const groups = (request.collecteCategoryPhotos ?? []).filter(
+    (g) => g.urls.length > 0,
+  );
+  const hasPhotos = groups.length > 0;
+
+  function pickCategory(category: string) {
+    pendingCategory.current = category;
+    setPickerOpen(false);
+    inputRef.current?.click();
+  }
+
+  async function handleFiles(files: FileList | null) {
+    const category = pendingCategory.current;
+    if (!files || files.length === 0 || !category) return;
+    setUploading(true);
+    try {
+      const ids: Id<"_storage">[] = [];
+      for (const file of Array.from(files)) ids.push(await upload(file));
+      await addPhotos({ id: request._id, category, photos: ids });
+    } finally {
+      setUploading(false);
+      pendingCategory.current = null;
+      if (inputRef.current) inputRef.current.value = "";
+    }
+  }
+
+  if (!hasPhotos && !canUpdate) return null;
+
+  return (
+    <section>
+      <SectionTitle>Photos des objets</SectionTitle>
+      {hasPhotos && (
+        <div className="space-y-3">
+          {groups.map((entry) => {
+            const cat = COLLECTE_CATEGORY_BY_KEY[entry.category];
+            return (
+              <div key={entry.category}>
+                <div className="mb-1.5 flex items-center gap-2">
+                  {cat?.image && (
+                    <img src={cat.image} alt="" className="h-6 w-6 object-contain" />
+                  )}
+                  <span className="text-xs font-medium text-zinc-400">
+                    {cat?.label ?? entry.category}
+                  </span>
+                </div>
+                <PhotoGrid
+                  urls={entry.urls}
+                  onOpen={(index) => setLb({ urls: entry.urls, index })}
+                  onRemove={
+                    canUpdate
+                      ? (index) =>
+                          removePhoto({
+                            id: request._id,
+                            category: entry.category,
+                            index,
+                          })
+                      : undefined
+                  }
+                />
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      {canUpdate && (
+        <button
+          type="button"
+          disabled={uploading}
+          onClick={() => setPickerOpen(true)}
+          className={cn(
+            "mt-3 flex w-full items-center justify-center gap-2 rounded-2xl border border-dashed px-4 py-3 text-sm font-medium transition-colors",
+            uploading
+              ? "cursor-not-allowed border-[var(--crm-border-strong)] bg-[var(--crm-surface-2)] text-zinc-500 opacity-70"
+              : "border-[var(--crm-border-strong)] bg-[var(--crm-surface-2)] text-zinc-300 hover:border-brand-500/60 hover:text-zinc-100",
+          )}
+        >
+          {uploading ? (
+            <>
+              <Loader2 className="h-4 w-4 animate-spin" /> Envoi des images…
+            </>
+          ) : (
+            <>
+              <ImagePlus className="h-4 w-4" /> Ajouter une photo
+            </>
+          )}
+        </button>
+      )}
+
+      <input
+        ref={inputRef}
+        type="file"
+        accept="image/*"
+        multiple
+        className="hidden"
+        onChange={(e) => handleFiles(e.target.files)}
+      />
+
+      <Modal
+        dark
+        open={pickerOpen}
+        onClose={() => setPickerOpen(false)}
+        title="Type d'objet"
+        className="max-w-2xl"
+      >
+        <p className="mb-4 text-sm text-zinc-400">
+          Choisissez la catégorie de l'objet à photographier, puis sélectionnez
+          les images à importer.
+        </p>
+        <div className="grid grid-cols-3 gap-3 sm:grid-cols-4">
+          {COLLECTE_CATEGORIES.map((cat) => (
+            <button
+              key={cat.key}
+              type="button"
+              onClick={() => pickCategory(cat.key)}
+              className="flex flex-col items-center gap-2 rounded-2xl border border-[var(--crm-border)] bg-[var(--crm-surface-2)] p-3 text-center transition-colors hover:border-brand-500/60 hover:bg-[var(--crm-surface-3)]"
+            >
+              <img src={cat.image} alt="" className="h-12 w-12 object-contain" />
+              <span className="text-[11px] leading-tight text-zinc-300">
+                {cat.label}
+              </span>
+            </button>
+          ))}
+        </div>
+      </Modal>
+
+      {lb && (
+        <Lightbox
+          images={lb.urls}
+          startIndex={lb.index}
+          onClose={() => setLb(null)}
+        />
+      )}
+    </section>
   );
 }
 
@@ -680,9 +1402,15 @@ function GestionTab({
 
   const [scheduleOpen, setScheduleOpen] = useState(false);
   const patchVisit = useMutation(api.requests.patchManagement);
+  const setGdrReference = useMutation(api.articles.setGdrReference);
+  const [gdrInput, setGdrInput] = useState("");
+  const [gdrSaving, setGdrSaving] = useState(false);
+  const [gdrError, setGdrError] = useState("");
   const num = (s: string) => (s.trim() === "" ? null : Number(s));
+  const persona = usePersona();
+  // Auteur des modifications : persona (compte accueil partagé) sinon le compte.
   const currentUser =
-    user?.fullName ?? user?.primaryEmailAddress?.emailAddress ?? undefined;
+    persona ?? user?.fullName ?? user?.primaryEmailAddress?.emailAddress ?? undefined;
 
   const linkedArticle = useQuery(
     api.articles.getPublic,
@@ -700,13 +1428,13 @@ function GestionTab({
   const isC1 = request.type === "collecte" && request.collecteType === "C1";
 
   if (isFullProcess) {
-    if (!request.estimatedHours)
+    if (request.type !== "collecte" && !request.estimatedHours)
       stepBlockers[STEP.devisEdite] =
         "Renseignez les heures estimées (champ « Temps estimé ») avant de cocher cette étape.";
     if (!request.scheduledDate)
       stepBlockers[STEP.prestaPlanifiee] =
         "Programmez une date avant de cocher cette étape.";
-    if (!request.actualHours)
+    if (request.type !== "collecte" && !request.actualHours)
       stepBlockers[STEP.prestaTerminee] =
         "Renseignez les heures réelles (champ « Temps réel passé ») avant de cocher cette étape.";
     if (!request.quoteAmount)
@@ -717,9 +1445,6 @@ function GestionTab({
     if (!request.scheduledDate)
       stepBlockers[STEP.prestaPlanifiee] =
         "Programmez une date avant de cocher cette étape.";
-    if (!request.actualHours)
-      stepBlockers[STEP.prestaTerminee] =
-        "Renseignez les heures réelles (champ « Temps réel passé ») avant de cocher cette étape.";
   }
   if (request.type === "article" && linkedArticle && !linkedArticle.gdrReference) {
     stepBlockers[STEP.factureReglee] =
@@ -746,6 +1471,7 @@ function GestionTab({
               setCollecteType({
                 id: request._id,
                 collecteType: e.target.value as CollecteType,
+                actorName: currentUser,
               })
             }
           >
@@ -758,11 +1484,66 @@ function GestionTab({
               </option>
             ))}
           </Select>
+          <FieldMeta edit={request.fieldEdits?.collecteType} />
           {collecteUndefined && (
             <p className="mt-2 text-xs text-amber-400">
               Choisissez C1, C2 ou C3 pour démarrer le suivi du process.
             </p>
           )}
+        </section>
+      )}
+
+      {/* Raccourci : renseigner la réf. externe (GDR) sans quitter la demande */}
+      {request.type === "article" && linkedArticle && !linkedArticle.gdrReference && (
+        <section className="rounded-2xl border border-amber-500/30 bg-amber-500/5 p-4">
+          <SectionTitle>Référence externe (GDR)</SectionTitle>
+          <p className="mb-3 text-xs text-amber-300/90">
+            Renseignez la référence GDR de l'article (15 chiffres) directement ici
+            pour pouvoir clôturer la vente, sans passer par le stock.
+          </p>
+          <div className="flex flex-col gap-2 sm:flex-row sm:items-start">
+            <div className="flex-1">
+              <Input
+                value={gdrInput}
+                onChange={(e) => {
+                  setGdrInput(e.target.value.replace(/\D/g, "").slice(0, 15));
+                  setGdrError("");
+                }}
+                inputMode="numeric"
+                placeholder="15 chiffres"
+              />
+              {gdrError && (
+                <p className="mt-1 text-xs text-red-400">{gdrError}</p>
+              )}
+            </div>
+            <Button
+              type="button"
+              disabled={gdrSaving || gdrInput.length === 0}
+              onClick={async () => {
+                if (!/^\d{15}$/.test(gdrInput)) {
+                  setGdrError("La référence GDR doit contenir exactement 15 chiffres.");
+                  return;
+                }
+                setGdrSaving(true);
+                setGdrError("");
+                try {
+                  await setGdrReference({
+                    id: request.article!.articleId!,
+                    gdrReference: gdrInput,
+                  });
+                  setGdrInput("");
+                } catch (err) {
+                  setGdrError(
+                    err instanceof Error ? err.message : "Enregistrement impossible.",
+                  );
+                } finally {
+                  setGdrSaving(false);
+                }
+              }}
+            >
+              {gdrSaving ? <Spinner className="h-4 w-4" /> : "Enregistrer"}
+            </Button>
+          </div>
         </section>
       )}
 
@@ -793,7 +1574,7 @@ function GestionTab({
           <Select
             value={request.site ?? ""}
             onChange={(e) =>
-              patch({ id: request._id, site: e.target.value as Site })
+              patch({ id: request._id, site: e.target.value as Site, actorName: currentUser })
             }
           >
             <option value="" disabled>
@@ -805,6 +1586,7 @@ function GestionTab({
               </option>
             ))}
           </Select>
+          <FieldMeta edit={request.fieldEdits?.site} />
         </div>
         <div>
           <SectionTitle>Attribuée à</SectionTitle>
@@ -816,6 +1598,7 @@ function GestionTab({
                 assignedTo: e.target.value
                   ? (e.target.value as Id<"teamMembers">)
                   : null,
+                actorName: currentUser,
               })
             }
           >
@@ -826,6 +1609,7 @@ function GestionTab({
               </option>
             ))}
           </Select>
+          <FieldMeta edit={request.fieldEdits?.assignedTo} />
         </div>
       </section>
 
@@ -841,6 +1625,7 @@ function GestionTab({
                   assignedVehicle: e.target.value
                     ? (e.target.value as Id<"vehicles">)
                     : null,
+                  actorName: currentUser,
                 })
               }
             >
@@ -857,6 +1642,7 @@ function GestionTab({
               Programmez une date pour affecter un véhicule disponible ce jour-là.
             </p>
           )}
+          <FieldMeta edit={request.fieldEdits?.assignedVehicle} />
         </section>
       )}
 
@@ -868,10 +1654,11 @@ function GestionTab({
             description="Une visite préalable est requise avant la collecte."
             checked={request.visitNeeded ?? false}
             onChange={(e) =>
-              patchVisit({ id: request._id, visitNeeded: e.target.checked })
+              patchVisit({ id: request._id, visitNeeded: e.target.checked, actorName: currentUser })
             }
             className="border-[var(--crm-border)] bg-[var(--crm-surface-2)] hover:bg-[var(--crm-surface-3)]"
           />
+          <FieldMeta edit={request.fieldEdits?.visitNeeded} />
         </section>
       )}
 
@@ -887,7 +1674,7 @@ function GestionTab({
             <CalendarDays className="h-4 w-4 shrink-0 text-[var(--muted-foreground)]" />
             <span className={request.scheduledDate ? "text-[var(--foreground)]" : "text-[var(--muted-foreground)]"}>
               {request.scheduledDate
-                ? format(new Date(request.scheduledDate), "EEEE d MMMM yyyy", { locale: fr })
+                ? formatScheduledDate(request.scheduledDate)
                 : "Programmer une date"}
             </span>
           </button>
@@ -896,13 +1683,14 @@ function GestionTab({
               variant="ghost"
               size="sm"
               onClick={() =>
-                schedule({ id: request._id, scheduledDate: undefined })
+                schedule({ id: request._id, scheduledDate: undefined, actorName: currentUser })
               }
             >
               Retirer
             </Button>
           )}
         </div>
+        <FieldMeta edit={request.fieldEdits?.scheduledDate} />
         <ScheduleCalendarModal
           open={scheduleOpen}
           onClose={() => setScheduleOpen(false)}
@@ -913,6 +1701,7 @@ function GestionTab({
             schedule({
               id: request._id,
               scheduledDate,
+              actorName: currentUser,
               ...(usesVehicle ? { assignedVehicle: vehicleId ?? null } : {}),
             });
             setScheduleOpen(false);
@@ -930,9 +1719,10 @@ function GestionTab({
             min="0"
             defaultValue={request.estimatedHours ?? ""}
             onBlur={(e) =>
-              patch({ id: request._id, estimatedHours: num(e.target.value) })
+              patch({ id: request._id, estimatedHours: num(e.target.value), actorName: currentUser })
             }
           />
+          <FieldMeta edit={request.fieldEdits?.estimatedHours} />
         </div>
         <div>
           <SectionTitle>Temps réel passé (h)</SectionTitle>
@@ -943,9 +1733,10 @@ function GestionTab({
             min="0"
             defaultValue={request.actualHours ?? ""}
             onBlur={(e) =>
-              patch({ id: request._id, actualHours: num(e.target.value) })
+              patch({ id: request._id, actualHours: num(e.target.value), actorName: currentUser })
             }
           />
+          <FieldMeta edit={request.fieldEdits?.actualHours} />
         </div>
       </section>
 
@@ -962,9 +1753,10 @@ function GestionTab({
               min="0"
               defaultValue={request.quoteAmount ?? ""}
               onBlur={(e) =>
-                patch({ id: request._id, quoteAmount: num(e.target.value) })
+                patch({ id: request._id, quoteAmount: num(e.target.value), actorName: currentUser })
               }
             />
+            <FieldMeta edit={request.fieldEdits?.quoteAmount} />
           </div>
           <div>
             <label className="block text-xs text-zinc-500 mb-1">
@@ -978,9 +1770,11 @@ function GestionTab({
                 patch({
                   id: request._id,
                   quoteDetails: e.target.value.trim() || null,
+                  actorName: currentUser,
                 })
               }
             />
+            <FieldMeta edit={request.fieldEdits?.quoteDetails} />
           </div>
         </div>
       </section>
@@ -992,6 +1786,10 @@ function GestionTab({
 
 function ClientTab({ request, canUpdate }: { request: RequestDoc; canUpdate: boolean }) {
   const update = useMutation(api.requests.updateCustomer);
+  const { user } = useUser();
+  const persona = usePersona();
+  const actorName =
+    persona ?? user?.fullName ?? user?.primaryEmailAddress?.emailAddress ?? undefined;
   const [c, setC] = useState({
     firstName: request.customer.firstName,
     lastName: request.customer.lastName,
@@ -1014,6 +1812,7 @@ function ClientTab({ request, canUpdate }: { request: RequestDoc; canUpdate: boo
     try {
       await update({
         id: request._id,
+        actorName,
         customer: {
           firstName: c.firstName,
           lastName: c.lastName,
@@ -1053,6 +1852,7 @@ function ClientTab({ request, canUpdate }: { request: RequestDoc; canUpdate: boo
             <PhoneInput value={c.phone} onChange={(e) => set("phone", e.target.value)} />
           </Field>
         </div>
+        <FieldMeta edit={request.fieldEdits?.customer} />
       </section>
 
       <section>
@@ -1465,6 +2265,18 @@ function SectionTitle({ children }: { children: React.ReactNode }) {
   );
 }
 
+/** « Modifié par … » affiché sous un champ, à partir du suivi `fieldEdits`. */
+function FieldMeta({ edit }: { edit?: { by: string; at: number } }) {
+  if (!edit?.by) return null;
+  return (
+    <p className="mt-1 text-[11px] text-zinc-500">
+      Modifié par <span className="font-medium text-zinc-400">{edit.by}</span>
+      {" · "}
+      {formatRelative(edit.at)}
+    </p>
+  );
+}
+
 function Row({
   label,
   value,
@@ -1508,14 +2320,18 @@ function joinItems(
   return parts.length > 0 ? parts.join(", ") : undefined;
 }
 
-function RequestDetails({ request }: { request: RequestDoc }) {
+function RequestDetails({
+  request,
+  canUpdate = false,
+}: {
+  request: RequestDoc;
+  canUpdate?: boolean;
+}) {
   if (request.type === "aerogommage") {
     return (
       <AerogommageDetails
-        items={request.aerogommage ?? []}
-        photosByItem={request.aerogommagePhotos ?? []}
-        options={request.aerogommageOptions}
-        customerCity={request.customer.city}
+        request={request}
+        canUpdate={canUpdate}
       />
     );
   }
@@ -1572,6 +2388,25 @@ function RequestDetails({ request }: { request: RequestDoc }) {
         </section>
 
         <section>
+          <SectionTitle>Conditions du don</SectionTitle>
+          <div className="text-sm">
+            <Row
+              label="Démontage possible par le client"
+              value={yesNo(c.dismountable)}
+            />
+            <Row
+              label="Objets en bon état / réemployables"
+              value={yesNo(c.reusableGoodCondition)}
+            />
+            <Row label="Objets triés par famille" value={yesNo(c.sorted)} />
+            <Row
+              label="Don sans déchet / non collectable"
+              value={yesNo(c.noWaste)}
+            />
+          </div>
+        </section>
+
+        <section>
           <SectionTitle>Objets</SectionTitle>
           {(c.objectCategories?.length ?? 0) > 0 ? (
             <>
@@ -1607,35 +2442,7 @@ function RequestDetails({ request }: { request: RequestDoc }) {
           )}
         </section>
 
-        {(request.collecteCategoryPhotos?.length ?? 0) > 0 && (
-          <section>
-            <SectionTitle>Photos des objets</SectionTitle>
-            <div className="grid grid-cols-3 gap-2 sm:grid-cols-4">
-              {request.collecteCategoryPhotos!.flatMap((entry) => {
-                const cat = COLLECTE_CATEGORY_BY_KEY[entry.category];
-                return entry.urls.map((url, i) => (
-                  <a
-                    key={`${entry.category}-${i}`}
-                    href={url}
-                    target="_blank"
-                    rel="noreferrer"
-                    className="relative aspect-square overflow-hidden rounded-xl border border-[var(--crm-border)] bg-[var(--crm-surface-2)]"
-                  >
-                    <img src={url} alt="" loading="lazy" className="h-full w-full object-cover" />
-                    {cat?.image && (
-                      <span
-                        title={cat.label}
-                        className="absolute left-1.5 top-1.5 flex h-7 w-7 items-center justify-center rounded-lg bg-white/90 shadow ring-1 ring-black/5"
-                      >
-                        <img src={cat.image} alt="" className="h-5 w-5 object-contain" />
-                      </span>
-                    )}
-                  </a>
-                ));
-              })}
-            </div>
-          </section>
-        )}
+        <CollecteCategoryPhotos request={request} />
       </>
     );
   }
@@ -2019,28 +2826,85 @@ function ArticleRequestPreview({
 
 /** Détails aérogommage avec onglets pour basculer d'un objet à l'autre. */
 function AerogommageDetails({
-  items,
-  photosByItem,
-  options,
-  customerCity,
+  request,
+  canUpdate,
 }: {
-  items: NonNullable<RequestDoc["aerogommage"]>;
-  photosByItem: string[][];
-  options?: RequestDoc["aerogommageOptions"];
-  customerCity?: string;
+  request: RequestDoc;
+  canUpdate: boolean;
 }) {
+  const items = request.aerogommage ?? [];
+  const photosByItem = request.aerogommagePhotos ?? [];
+  const options = request.aerogommageOptions;
+  const customerCity = request.customer.city;
   const [sel, setSel] = useState(0);
-  const [lb, setLb] = useState<number | null>(null);
+  const [lb, setLb] = useState<{ images: string[]; index: number } | null>(null);
+  const [uploading, setUploading] = useState<
+    "photos" | "beforePhotos" | "afterPhotos" | null
+  >(null);
+  const update = useMutation(api.requests.updateAerogommageDetails);
+  const upload = useUpload();
+  const { user } = useUser();
+  const persona = usePersona();
+  const actorName =
+    persona ?? user?.fullName ?? user?.primaryEmailAddress?.emailAddress ?? undefined;
+
   if (items.length === 0) return null;
   const idx = Math.min(sel, items.length - 1);
   const a = items[idx];
   const photos = photosByItem[idx] ?? [];
+  const beforePhotos = request.aerogommageBeforePhotos?.[idx] ?? [];
+  const afterPhotos = request.aerogommageAfterPhotos?.[idx] ?? [];
   const legacyPickup = items.some((item) => item.retrieval);
   const legacyDelivery = items.some((item) => item.delivery);
   const pickupAtHome = options?.pickupAtHome ?? legacyPickup;
   const deliveryAtHome = options?.deliveryAtHome ?? legacyDelivery;
   const pickupCity = options?.pickupAddress?.city ?? customerCity;
   const deliveryCity = options?.deliveryAddress?.city ?? customerCity;
+
+  async function patchItems(nextItems: NonNullable<RequestDoc["aerogommage"]>) {
+    await update({
+      id: request._id,
+      actorName,
+      comment: request.comment?.trim() || undefined,
+      aerogommageOptions: options,
+      items: nextItems,
+    });
+  }
+
+  async function addItemPhotos(
+    field: "photos" | "beforePhotos" | "afterPhotos",
+    files: FileList | null,
+  ) {
+    if (!files || files.length === 0) return;
+    setUploading(field);
+    try {
+      const ids: Id<"_storage">[] = [];
+      for (const file of Array.from(files)) ids.push(await upload(file));
+      const nextItems = items.map((item, itemIndex) =>
+        itemIndex === idx
+          ? { ...item, [field]: [...(item[field] ?? []), ...ids] }
+          : item,
+      );
+      await patchItems(nextItems);
+    } finally {
+      setUploading(null);
+    }
+  }
+
+  async function removeItemPhoto(
+    field: "photos" | "beforePhotos" | "afterPhotos",
+    photoIndex: number,
+  ) {
+    const nextItems = items.map((item, itemIndex) =>
+      itemIndex === idx
+        ? {
+            ...item,
+            [field]: (item[field] ?? []).filter((_, i) => i !== photoIndex),
+          }
+        : item,
+    );
+    await patchItems(nextItems);
+  }
 
   return (
     <div className="space-y-5">
@@ -2103,14 +2967,57 @@ function AerogommageDetails({
         {a.comment && <Row label="Commentaire" value={a.comment} />}
       </div>
 
-      {photos.length > 0 && (
-        <div className="mt-3">
-          <PhotoGrid urls={photos} onOpen={setLb} />
+      {(photos.length > 0 ||
+        beforePhotos.length > 0 ||
+        afterPhotos.length > 0 ||
+        canUpdate) && (
+        <div className="mt-3 space-y-3">
+          <ManagedRequestPhotoBlock
+            title="Photos client du meuble"
+            urls={photos}
+            uploading={uploading === "photos"}
+            onAdd={(files) => addItemPhotos("photos", files)}
+            onRemove={
+              canUpdate ? (photoIndex) => removeItemPhoto("photos", photoIndex) : undefined
+            }
+            onOpen={(index) => setLb({ images: photos, index })}
+            canUpdate={canUpdate}
+          />
+          <ManagedRequestPhotoBlock
+            title="Photos avant du meuble"
+            urls={beforePhotos}
+            uploading={uploading === "beforePhotos"}
+            onAdd={(files) => addItemPhotos("beforePhotos", files)}
+            onRemove={
+              canUpdate
+                ? (photoIndex) => removeItemPhoto("beforePhotos", photoIndex)
+                : undefined
+            }
+            onOpen={(index) => setLb({ images: beforePhotos, index })}
+            canUpdate={canUpdate}
+          />
+          <ManagedRequestPhotoBlock
+            title="Photos après du meuble"
+            urls={afterPhotos}
+            uploading={uploading === "afterPhotos"}
+            onAdd={(files) => addItemPhotos("afterPhotos", files)}
+            onRemove={
+              canUpdate
+                ? (photoIndex) => removeItemPhoto("afterPhotos", photoIndex)
+                : undefined
+            }
+            onOpen={(index) => setLb({ images: afterPhotos, index })}
+            canUpdate={canUpdate}
+          />
         </div>
       )}
 
       {lb !== null && (
-        <Lightbox images={photos} startIndex={lb} onClose={() => setLb(null)} />
+        <Lightbox
+          images={lb.images}
+          startIndex={lb.index}
+          onClose={() => setLb(null)}
+        />
       )}
       </section>
     </div>
