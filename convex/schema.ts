@@ -1120,6 +1120,7 @@ export default defineSchema(
     status: v.union(v.literal("todo"), v.literal("in_progress"), v.literal("done")),
     dueDate: v.optional(v.number()),
     endDate: v.optional(v.number()),
+    odometerKm: v.optional(v.number()),
     createdBy: v.string(),
     createdAt: v.number(),
     updatedAt: v.number(),
@@ -1567,6 +1568,8 @@ export default defineSchema(
   /** Clients (donneurs d'ordre des chantiers). */
   ptClients: defineTable({
     name: v.string(),
+    /** Interne (structures du groupe) ou externe — filtre principal de l'UI. */
+    clientType: v.optional(v.union(v.literal("interne"), v.literal("externe"))),
     contactName: v.optional(v.string()),
     email: v.optional(v.string()),
     phone: v.optional(v.string()),
@@ -1706,6 +1709,8 @@ export default defineSchema(
       ),
     ),
     projectId: v.id("ptProjects"),
+    /** Fournisseur rattaché (justificatifs de dépenses). */
+    supplierId: v.optional(v.id("ptSuppliers")),
     timeEntryId: v.optional(v.id("ptTimeEntries")),
     expenseId: v.optional(v.id("ptExpenses")),
     invoiceId: v.optional(v.id("ptInvoices")),

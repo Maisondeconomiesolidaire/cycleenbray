@@ -6,7 +6,9 @@ import { api, internal } from "./_generated/api";
 import {
   accessAllows,
   emailForClerkId,
+  fetchInternalClerkDirectory,
   hasCrmPermission,
+  isReservationParticipant,
   photoForClerkId,
   requireCrmPermission,
   requireUser,
@@ -286,8 +288,9 @@ export const listMyEquipmentReservations = query({
 });
 
 /**
- * Annuaire « Réserver pour » : membres internes (@eco-solidaire.fr) via l'API
- * Clerk, hors soi-même. Réservé aux comptes pouvant réserver un équipement.
+ * Annuaire « Réserver pour » : uniquement les membres internes
+ * (@eco-solidaire.fr) de l'instance Clerk PRODUCTION, hors soi-même. Même source
+ * de vérité que l'annuaire des salles (voir `fetchInternalClerkDirectory`).
  */
 export const listEquipmentDirectory = action({
   args: {},
@@ -297,59 +300,8 @@ export const listEquipmentDirectory = action({
       throw new Error("Accès insuffisant pour réserver pour un collègue.");
     }
     const secret = env.CLERK_SECRET_KEY;
-    if (!secret) return [];
-    const selfEmail = (access.email ?? "").trim().toLowerCase();
-
-    const result: Array<{ clerkId: string; name: string; imageUrl: string | null }> = [];
-    const seen = new Set<string>();
-    const pageSize = 100;
-    for (let offset = 0; ; ) {
-      const url = new URL("https://api.clerk.com/v1/users");
-      url.searchParams.set("limit", String(pageSize));
-      url.searchParams.set("offset", String(offset));
-      url.searchParams.set("order_by", "last_name");
-      const response = await fetch(url, {
-        headers: { Authorization: `Bearer ${secret}`, "Content-Type": "application/json" },
-      });
-      if (!response.ok) break;
-      const payload = (await response.json()) as unknown;
-      const rawUsers: Array<{
-        id?: string;
-        first_name?: string | null;
-        last_name?: string | null;
-        image_url?: string | null;
-        primary_email_address_id?: string | null;
-        email_addresses?: Array<{ id?: string; email_address?: string }>;
-      }> = Array.isArray(payload)
-        ? payload
-        : Array.isArray((payload as { data?: unknown }).data)
-          ? (payload as { data: never[] }).data
-          : [];
-
-      for (const user of rawUsers) {
-        const clerkId = typeof user.id === "string" ? user.id : "";
-        if (!clerkId) continue;
-        const emails = Array.isArray(user.email_addresses) ? user.email_addresses : [];
-        const primary =
-          emails.find((entry) => entry.id === user.primary_email_address_id) ?? emails[0];
-        const email = (primary?.email_address ?? "").trim().toLowerCase();
-        if (!email.endsWith("@eco-solidaire.fr")) continue;
-        if (selfEmail && email === selfEmail) continue;
-        if (seen.has(clerkId)) continue;
-        seen.add(clerkId);
-        const name = [user.first_name, user.last_name].filter(Boolean).join(" ").trim() || email;
-        result.push({
-          clerkId,
-          name,
-          imageUrl: typeof user.image_url === "string" ? user.image_url : null,
-        });
-      }
-
-      if (rawUsers.length < pageSize) break;
-      offset += rawUsers.length;
-    }
-
-    return result.sort((a, b) => a.name.localeCompare(b.name, "fr"));
+    if (!secret) throw new Error("Annuaire indisponible : CLERK_SECRET_KEY manquante.");
+    return await fetchInternalClerkDirectory(secret, access.email ?? "");
   },
 });
 
@@ -463,7 +415,7 @@ export const cancelEquipmentReservation = mutation({
     const reservation = await ctx.db.get(args.reservationId);
     if (!reservation) return;
     const isManager = await hasCrmPermission(ctx, PAGE_KEY, "manage");
-    if (reservation.clerkId !== identity.subject && !isManager) {
+    if (!isReservationParticipant(reservation, identity.subject) && !isManager) {
       throw new Error("Annulation non autorisée.");
     }
     const equipment = await ctx.db.get(reservation.equipmentId);
