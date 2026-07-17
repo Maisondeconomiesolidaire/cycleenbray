@@ -11,6 +11,7 @@ import {
 import { SignedIn, SignedOut, useClerk, useUser } from "@clerk/clerk-react";
 import { AuthPanel } from "./components/AuthPanel";
 import { AppSwitcher } from "./components/AppSwitcher";
+import { HelpButton } from "./components/HelpButton";
 import { useMutation, useQuery } from "convex/react";
 import {
   Bike,
@@ -1051,6 +1052,7 @@ function CrmLayout() {
             </div>
             <Outlet />
           </div>
+          <HelpButton />
         </div>
       </SignedIn>
     </div>
