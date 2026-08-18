@@ -38,6 +38,7 @@ const TYPE_LABELS: Record<string, string> = {
   article: "Boutique",
   velo: "Recyclerie",
   livraison: "Livraison",
+  depot: "Dépôt en recyclerie",
 };
 
 function typeLabel(type: string) {
@@ -126,14 +127,46 @@ function articleCard(article: ArticlePreview) {
   </table>`;
 }
 
+/**
+ * Encart « ne pas répondre » affiché en bas des emails clients.
+ * Volontairement large et contrasté : l'adresse d'envoi ne reçoit rien, tout
+ * doit passer par l'espace client (photos, réponses, documents).
+ */
+function noReplyNotice() {
+  const base = appUrl();
+  return `<table role="presentation" cellpadding="0" cellspacing="0" width="100%" style="margin:26px 0 0;border:2px solid ${BRAND};border-radius:16px;background:#fff5f7;">
+    <tr>
+      <td class="px" style="padding:22px 24px;">
+        <p style="margin:0 0 10px;font-family:Helvetica,Arial,sans-serif;font-size:18px;font-weight:800;line-height:1.35;color:${BRAND};">
+          ⚠️ Merci de ne pas répondre à cet email
+        </p>
+        <p style="margin:0 0 14px;font-family:Helvetica,Arial,sans-serif;font-size:15px;font-weight:600;line-height:1.6;color:#3f3f46;">
+          Cette adresse d'envoi ne reçoit aucun message : une réponse ici ne sera
+          jamais lue par notre équipe.
+        </p>
+        <p style="margin:0 0 16px;font-family:Helvetica,Arial,sans-serif;font-size:15px;line-height:1.6;color:#3f3f46;">
+          <strong>Tout se passe depuis votre espace client</strong> : répondre à
+          nos messages, ajouter des photos ou des documents, suivre l'avancement
+          de votre demande. Vous y retrouvez l'historique complet de vos échanges
+          avec la Recyclerie, au même endroit.
+        </p>
+        ${button(`${base}/compte/messagerie`, "Accéder à mon espace client")}
+      </td>
+    </tr>
+  </table>`;
+}
+
 /** Gabarit complet : préheader, en-tête (logo), contenu, pied de page. */
 function shell(opts: {
   preheader: string;
   heading: string;
   intro: string;
   contentHtml?: string;
+  /** "staff" retire l'encart « ne pas répondre » (interne, pas d'espace client). */
+  audience?: "client" | "staff";
 }) {
   const base = appUrl();
+  const notice = opts.audience === "staff" ? "" : noReplyNotice();
   return `<!DOCTYPE html>
 <html lang="fr">
   <head>
@@ -166,6 +199,7 @@ function shell(opts: {
               <h1 style="margin:0 0 14px;font-family:Helvetica,Arial,sans-serif;font-size:22px;line-height:1.25;color:#18181b;">${esc(opts.heading)}</h1>
               <p style="margin:0 0 18px;font-family:Helvetica,Arial,sans-serif;font-size:15px;line-height:1.65;color:#3f3f46;">${opts.intro}</p>
               ${opts.contentHtml ?? ""}
+              ${notice}
             </td>
           </tr>
           <!-- Pied de page -->
@@ -177,7 +211,7 @@ function shell(opts: {
                 Réemploi, collecte, aérogommage &amp; atelier vélo
               </p>
               <p style="margin:0;font-family:Helvetica,Arial,sans-serif;font-size:11px;color:#c4c0b8;">
-                Message automatique — merci de ne pas répondre à cet email. Pour nous écrire, utilisez votre <a href="${base}/compte/messagerie" style="color:${BRAND};text-decoration:none;">messagerie</a>.
+                Message automatique envoyé par la Recyclerie.
               </p>
             </td>
           </tr>
@@ -191,17 +225,29 @@ function shell(opts: {
 /** Pièce jointe Resend : contenu en base64. */
 export type EmailAttachment = { filename: string; content: string };
 
+/** Encode des octets en base64 (par blocs, pour rester léger en mémoire). */
+export function bytesToBase64(bytes: Uint8Array): string {
+  let binary = "";
+  const chunk = 0x8000;
+  for (let i = 0; i < bytes.length; i += chunk) {
+    binary += String.fromCharCode(...bytes.subarray(i, i + chunk));
+  }
+  return btoa(binary);
+}
+type ResendSendOptions = { bcc?: string[] };
+
 export async function resendSend(
   to: string | string[],
   subject: string,
   html: string,
   from: string = FROM,
   attachments?: EmailAttachment[],
+  options?: ResendSendOptions,
 ) {
   const apiKey = process.env.RESEND_API_KEY;
   if (!apiKey) {
     console.warn("RESEND_API_KEY non configurée — email ignoré.");
-    return;
+    return false;
   }
   // Un SEUL appel Resend, même pour plusieurs destinataires (évite de dépasser
   // la limite de 2 requêtes/seconde de Resend qui faisait silencieusement
@@ -209,7 +255,10 @@ export async function resendSend(
   const recipients = (Array.isArray(to) ? to : [to])
     .map((email) => email.trim())
     .filter(Boolean);
-  if (recipients.length === 0) return;
+  if (recipients.length === 0) return false;
+  const bcc = (options?.bcc ?? [])
+    .map((email) => email.trim())
+    .filter(Boolean);
 
   const response = await fetch("https://api.resend.com/emails", {
     method: "POST",
@@ -222,6 +271,7 @@ export async function resendSend(
       to: recipients,
       subject,
       html,
+      ...(bcc.length > 0 ? { bcc } : {}),
       ...(attachments && attachments.length > 0 ? { attachments } : {}),
     }),
   });
@@ -231,7 +281,10 @@ export async function resendSend(
       `Resend (${response.status}) :`,
       (await response.text()).slice(0, 300),
     );
+    return false;
   }
+
+  return true;
 }
 
 const articleArg = v.optional(
@@ -326,6 +379,7 @@ export const sendNewRequestToStaff = internalAction({
     const label = typeLabel(type);
     const html = shell({
       preheader: `Nouvelle demande ${label} de ${customerName} (#${reference}).`,
+      audience: "staff",
       heading: "Nouvelle demande reçue",
       intro: `Une nouvelle demande <strong>${esc(label)}</strong> vient d'être créée par <strong>${esc(customerName)}</strong> (référence <strong>#${esc(reference)}</strong>).`,
       contentHtml: `
@@ -459,5 +513,159 @@ export const sendScheduled = internalAction({
       `,
     });
     await resendSend(email, `Intervention programmée · ${label} #${reference}`, html);
+  },
+});
+
+// ─── Dépôt en recyclerie ─────────────────────────────────────────────────────
+
+/**
+ * Rappel envoyé la veille d'un dépôt : mémo de préparation et lien d'annulation
+ * pour libérer le créneau si le client a un empêchement.
+ */
+export const sendDepotReminder = internalAction({
+  args: {
+    email: v.string(),
+    name: v.string(),
+    requestId: v.string(),
+    siteLabel: v.string(),
+    slotStart: v.number(),
+  },
+  handler: async (_ctx, { email, name, requestId, siteLabel, slotStart }) => {
+    const day = formatDay(slotStart);
+    const hour = new Intl.DateTimeFormat("fr-FR", {
+      hour: "2-digit",
+      minute: "2-digit",
+      timeZone: "Europe/Paris",
+    }).format(new Date(slotStart));
+    const orderUrl = `${appUrl()}/compte/commandes/${requestId}`;
+    const memo = [
+      "Vérifiez que vos objets sont propres, complets et réutilisables.",
+      'Pensez à prendre des "gros bras" avec vous si vous avez des meubles lourds à décharger.',
+      "Merci d'arriver à l'heure pour garantir la fluidité de notre accueil.",
+    ]
+      .map(
+        (line) =>
+          `<tr><td style="padding:4px 0;font-family:Helvetica,Arial,sans-serif;font-size:14px;line-height:22px;color:#3f3f46;">• ${esc(line)}</td></tr>`,
+      )
+      .join("");
+
+    const html = shell({
+      preheader: `Rappel : votre dépôt est prévu demain à ${hour}.`,
+      heading: "Petit rappel : c'est demain !",
+      intro: `Bonjour ${esc(name)},<br/><br/>Petit rappel ! Nous vous attendons demain pour votre dépôt d'objets.`,
+      contentHtml: `
+        <div style="margin:0 0 22px;padding:16px 18px;background:linear-gradient(135deg,#fff7ef,#ffe9d6);border:1px solid #ffe0c4;border-radius:14px;text-align:center;">
+          <p style="margin:0 0 4px;font-family:Helvetica,Arial,sans-serif;font-size:12px;text-transform:uppercase;letter-spacing:1px;color:#b45309;">Votre créneau</p>
+          <p style="margin:0;font-family:Helvetica,Arial,sans-serif;font-size:20px;font-weight:800;color:${BRAND};text-transform:capitalize;">${esc(day)} à ${esc(hour)}</p>
+          <p style="margin:6px 0 0;font-family:Helvetica,Arial,sans-serif;font-size:14px;color:#3f3f46;">${esc(siteLabel)}</p>
+        </div>
+        <p style="margin:0 0 8px;font-family:Helvetica,Arial,sans-serif;font-size:14px;font-weight:700;color:#18181b;">Un rapide mémo avant votre venue :</p>
+        <table role="presentation" cellpadding="0" cellspacing="0" width="100%" style="margin:0 0 22px;">${memo}</table>
+        <p style="margin:0 0 14px;font-family:Helvetica,Arial,sans-serif;font-size:14px;line-height:22px;color:#3f3f46;">
+          Un empêchement ? Merci d'annuler votre créneau, pour libérer la place.
+        </p>
+        <div style="margin:0 0 22px;">${button(orderUrl, "Annuler mon créneau", false)}</div>
+        <p style="margin:0;font-family:Helvetica,Arial,sans-serif;font-size:14px;line-height:22px;color:#3f3f46;">
+          À demain, et merci pour votre engagement en faveur du réemploi !<br/>
+          L'équipe de la Recyclerie.
+        </p>
+      `,
+    });
+    await resendSend(email, `Rappel · votre dépôt demain à ${hour}`, html);
+  },
+});
+
+// ─── Facturation ─────────────────────────────────────────────────────────────
+
+/** Compta prévenue quand une facture éditée attend son règlement. */
+const INVOICE_STAFF_EMAILS = ["l.delepine@eco-solidaire.fr"];
+
+/** Ligne « demande » d'un tableau récapitulatif de factures en attente. */
+function invoiceRow(r: {
+  reference: string;
+  type: string;
+  customerName: string;
+  amount?: number;
+  requestId: string;
+}) {
+  const amount = r.amount ? euro(r.amount) : "—";
+  return `<tr>
+    <td style="padding:10px 12px;border-top:1px solid #f1ece5;font-family:Helvetica,Arial,sans-serif;font-size:14px;font-weight:700;color:#18181b;">#${esc(r.reference)}</td>
+    <td style="padding:10px 12px;border-top:1px solid #f1ece5;font-family:Helvetica,Arial,sans-serif;font-size:14px;color:#3f3f46;">${esc(typeLabel(r.type))}</td>
+    <td style="padding:10px 12px;border-top:1px solid #f1ece5;font-family:Helvetica,Arial,sans-serif;font-size:14px;color:#3f3f46;">${esc(r.customerName)}</td>
+    <td style="padding:10px 12px;border-top:1px solid #f1ece5;font-family:Helvetica,Arial,sans-serif;font-size:14px;text-align:right;color:#18181b;">${esc(amount)}</td>
+  </tr>`;
+}
+
+const invoiceRequestArg = v.object({
+  reference: v.string(),
+  type: v.string(),
+  customerName: v.string(),
+  amount: v.optional(v.number()),
+  requestId: v.string(),
+});
+
+/** Une facture vient de passer en « éditée » : règlement en attente. */
+export const sendInvoicePendingPayment = internalAction({
+  args: invoiceRequestArg,
+  handler: async (_ctx, request) => {
+    const { reference, type, customerName, amount } = request;
+    const label = typeLabel(type);
+    const html = shell({
+      preheader: `Facture éditée pour ${customerName} (#${reference}) — en attente de règlement.`,
+      audience: "staff",
+      heading: "Une facture attend son règlement 🧾",
+      intro: `La facture de la demande <strong>${esc(label)}</strong> de <strong>${esc(customerName)}</strong> (référence <strong>#${esc(reference)}</strong>) vient d'être éditée.<br/><br/>Dès que le règlement est encaissé, pense à <strong>cocher l'étape « Facture réglée »</strong> dans le CRM pour clôturer la demande.`,
+      contentHtml: `
+        <table role="presentation" cellpadding="0" cellspacing="0" width="100%" style="margin:0 0 22px;border:1px solid #ece9e4;border-radius:14px;overflow:hidden;background:#fffdfb;">
+          <tr><td style="padding:14px 16px;">
+            <p style="margin:0 0 6px;font-family:Helvetica,Arial,sans-serif;font-size:12px;text-transform:uppercase;letter-spacing:1px;color:#a1a1aa;">Montant</p>
+            <p style="margin:0;font-family:Helvetica,Arial,sans-serif;font-size:22px;font-weight:800;color:${BRAND};">${esc(amount ? euro(amount) : "Non renseigné")}</p>
+          </td></tr>
+        </table>
+        <div style="margin:0 0 22px;">${button(`${appUrl()}/crm/demandes`, "Ouvrir le CRM")}</div>
+      `,
+    });
+    await resendSend(
+      INVOICE_STAFF_EMAILS,
+      `Facture à régler · ${label} #${reference}`,
+      html,
+    );
+  },
+});
+
+/** Récapitulatif de toutes les factures éditées en attente de règlement. */
+export const sendInvoicePendingDigest = internalAction({
+  args: { requests: v.array(invoiceRequestArg) },
+  handler: async (_ctx, { requests }) => {
+    if (requests.length === 0) return;
+    const total = requests.reduce((sum, r) => sum + (r.amount ?? 0), 0);
+    const count = requests.length;
+    const html = shell({
+      preheader: `${count} facture${count > 1 ? "s" : ""} éditée${count > 1 ? "s" : ""} en attente de règlement.`,
+      audience: "staff",
+      heading: "Factures en attente de règlement 🧾",
+      intro: `Voici les demandes dont la facture est éditée mais <strong>pas encore marquée comme réglée</strong> dans le CRM.<br/><br/>Pour chacune, une fois le règlement encaissé, coche l'étape <strong>« Facture réglée »</strong> pour clôturer la demande.`,
+      contentHtml: `
+        <table role="presentation" cellpadding="0" cellspacing="0" width="100%" style="margin:0 0 18px;border:1px solid #ece9e4;border-radius:14px;overflow:hidden;background:#fffdfb;">
+          <tr style="background:#faf8f5;">
+            <th align="left" style="padding:10px 12px;font-family:Helvetica,Arial,sans-serif;font-size:12px;text-transform:uppercase;letter-spacing:1px;color:#a1a1aa;">Réf.</th>
+            <th align="left" style="padding:10px 12px;font-family:Helvetica,Arial,sans-serif;font-size:12px;text-transform:uppercase;letter-spacing:1px;color:#a1a1aa;">Type</th>
+            <th align="left" style="padding:10px 12px;font-family:Helvetica,Arial,sans-serif;font-size:12px;text-transform:uppercase;letter-spacing:1px;color:#a1a1aa;">Client</th>
+            <th align="right" style="padding:10px 12px;font-family:Helvetica,Arial,sans-serif;font-size:12px;text-transform:uppercase;letter-spacing:1px;color:#a1a1aa;">Montant</th>
+          </tr>
+          ${requests.map(invoiceRow).join("")}
+        </table>
+        <p style="margin:0 0 22px;font-family:Helvetica,Arial,sans-serif;font-size:15px;color:#3f3f46;">
+          <strong>${count}</strong> facture${count > 1 ? "s" : ""} en attente · total <strong>${esc(euro(total))}</strong>
+        </p>
+        <div style="margin:0 0 22px;">${button(`${appUrl()}/crm/demandes`, "Ouvrir le CRM")}</div>
+      `,
+    });
+    await resendSend(
+      INVOICE_STAFF_EMAILS,
+      `${count} facture${count > 1 ? "s" : ""} en attente de règlement`,
+      html,
+    );
   },
 });

@@ -8,7 +8,32 @@ export const requestType = v.union(
   v.literal("article"),
   v.literal("velo"),
   v.literal("livraison"),
+  v.literal("depot"),
 );
+
+/** Recyclerie où le client vient déposer ses objets. */
+export const depotSite = v.union(v.literal("60"), v.literal("76"));
+
+/** Véhicule annoncé pour le dépôt : conditionne le temps de déchargement. */
+export const depotVehicleType = v.union(
+  v.literal("voiture"),
+  v.literal("camionnette"),
+  v.literal("remorque"),
+);
+
+/**
+ * Rendez-vous de dépôt : une recyclerie, un créneau du lundi et le véhicule
+ * annoncé. `slotStart` est l'horodatage du début de créneau (unique par site).
+ */
+export const depotDetails = v.object({
+  site: depotSite,
+  slotStart: v.number(),
+  slotEnd: v.number(),
+  vehicleType: depotVehicleType,
+  description: v.optional(v.string()),
+  /** Rappel J-1 envoyé au client (évite le doublon si le cron repasse). */
+  reminderSentAt: v.optional(v.number()),
+});
 
 /** App « Feedback » — application visée par un retour utilisateur. */
 export const feedbackApp = v.union(
@@ -21,12 +46,19 @@ export const feedbackApp = v.union(
   v.literal("feedback"),
 );
 
-/** App « Feedback » — nature du retour. */
+/**
+ * App « Feedback » — nature du retour.
+ *
+ * `nouvelle_application` est le seul type qui ne vise **aucune** app existante
+ * (idée d'outil à créer) : les retours de ce type sont enregistrés sans champ
+ * `app`, d'où son caractère optionnel dans la table `feedback`.
+ */
 export const feedbackType = v.union(
   v.literal("fonctionnalite"),
   v.literal("probleme"),
   v.literal("amelioration"),
   v.literal("question"),
+  v.literal("nouvelle_application"),
 );
 
 /**
@@ -38,6 +70,18 @@ export const feedbackStatus = v.union(
   v.literal("nouveau"),
   v.literal("en_cours"),
   v.literal("termine"),
+);
+
+/**
+ * App « Feedback » — urgence déclarée par l'auteur du retour. Optionnelle en
+ * base : les retours déposés avant cette fonctionnalité n'en ont pas, et le
+ * frontend les affiche alors en « Normale ».
+ */
+export const feedbackPriority = v.union(
+  v.literal("basse"),
+  v.literal("normale"),
+  v.literal("haute"),
+  v.literal("urgente"),
 );
 
 /** App « Bennes & Pro » — matériaux déposables. */
@@ -82,14 +126,24 @@ export const bpUnit = v.union(
   v.literal("unite"),
 );
 
-/** App « Bennes & Pro » — facturation Stripe du DIB d'un dépôt. */
+/** Une ligne de matière facturée sur une facture Stripe Bennes & Pro. */
+export const bpBillingLine = v.object({
+  material: bpMaterial,
+  weightKg: v.number(),
+  priceCentsPerKg: v.number(),
+  amountCents: v.number(),
+});
+
+/** App « Bennes & Pro » — facturation Stripe des matières payantes d'un dépôt. */
 export const bpBilling = v.object({
-  /** Poids DIB facturable en kg (lignes kg + tonnes converties). */
+  /** Poids total facturable en kg (lignes kg + tonnes converties). */
   weightKg: v.number(),
   /** Prix appliqué, en centimes d'euro par kg (HT). */
   priceCentsPerKg: v.number(),
   /** Montant HT en centimes d'euro (la TVA est ajoutée sur la facture Stripe). */
   amountCents: v.number(),
+  /** Détail par matière, conservé pour éditer exactement les lignes Stripe. */
+  items: v.optional(v.array(bpBillingLine)),
   /** Taux de TVA appliqué (ex. 20). Les anciens dépôts sans valeur sont affichés au taux courant. */
   vatRate: v.optional(v.number()),
   status: v.union(
@@ -141,6 +195,7 @@ export const requestOutcome = v.union(
 export const requestLostReason = v.union(
   v.literal("devis_refuse"),
   v.literal("pas_de_retour_client"),
+  v.literal("annulation_client"),
   v.literal("autre"),
 );
 
@@ -149,7 +204,7 @@ export const requestOrigin = v.union(
   v.literal("external"),
 );
 
-export const hrEmployeeGender = v.union(v.literal("homme"), v.literal("femme"));
+export const hrEmployeeGender = v.union(v.literal("Monsieur"), v.literal("Madame"));
 
 export const hrEmployeeStructure = v.union(
   v.literal("Pays de Bray Services 60"),
@@ -167,6 +222,9 @@ export const hrContractWebhookPayload = v.object({
   adresse_salarie: v.string(),
   num_sec_sociale: v.string(),
   structure: v.string(),
+  Nom_contrat: v.optional(v.string()),
+  nom_contrat: v.optional(v.string()),
+  numero_contrat: v.optional(v.string()),
   type_contrat: v.string(),
   type_document: v.string(),
   date_fin_contrat: v.string(),
@@ -357,6 +415,11 @@ export default defineSchema(
       // Ancien statut conservé pour compatibilité avec les articles déjà créés.
       v.literal("lot"),
     ),
+    /**
+     * Article créé par simple photo depuis le stock boutique : il attend encore
+     * la génération d'annonce IA et le détourage (cf. « Nouveau run »).
+     */
+    draft: v.optional(v.boolean()),
     isLot: v.optional(v.boolean()),
     bundledArticleIds: v.optional(v.array(v.id("articles"))),
     bundleKey: v.optional(v.string()),
@@ -437,6 +500,7 @@ export default defineSchema(
     payment: v.optional(requestPayment),
     velo: v.optional(veloDetails),
     livraison: v.optional(livraisonDetails),
+    depot: v.optional(depotDetails),
     // Véhicule de la flotte affecté (collecte / livraison planifiée).
     assignedVehicle: v.optional(v.id("vehicles")),
     createdAt: v.number(),
@@ -462,6 +526,22 @@ export default defineSchema(
     .index("by_scheduledDate", ["scheduledDate"])
     .index("by_assignedVehicle", ["assignedVehicle"])
     .index("by_reference", ["reference"]),
+
+  /**
+   * Créneaux de dépôt rendus indisponibles par l'équipe (fermeture, absence).
+   *
+   * Sans `slotStart`, c'est la journée entière qui est fermée pour ce site.
+   */
+  depotBlockedSlots: defineTable({
+    site: depotSite,
+    /** Jour concerné, `YYYY-MM-DD` en heure de Paris. */
+    date: v.string(),
+    slotStart: v.optional(v.number()),
+    createdAt: v.number(),
+    createdBy: v.string(),
+  })
+    .index("by_site", ["site"])
+    .index("by_site_and_date", ["site", "date"]),
 
   /** Prospects/clients importés hors demandes (Bubble, etc.). */
   crmCustomers: defineTable({
@@ -557,6 +637,25 @@ export default defineSchema(
     .index("by_clerkId", ["clerkId"])
     .index("by_email", ["email"]),
 
+  /** Solde d'engagement partagé par toutes les applications. */
+  userPoints: defineTable({
+    clerkId: v.string(),
+    displayName: v.string(),
+    profileImageUrl: v.optional(v.string()),
+    points: v.number(),
+    updatedAt: v.number(),
+  })
+    .index("by_clerkId", ["clerkId"])
+    .index("by_points", ["points"]),
+
+  /** Une attribution par action, afin qu'un même retour ne rapporte qu'une fois. */
+  userPointAwards: defineTable({
+    clerkId: v.string(),
+    eventKey: v.string(),
+    points: v.number(),
+    createdAt: v.number(),
+  }).index("by_clerkId_and_eventKey", ["clerkId", "eventKey"]),
+
   /** Demandes de congés / absences déposées depuis Mes Outils. */
   leaveRequests: defineTable({
     clerkId: v.string(),
@@ -611,12 +710,28 @@ export default defineSchema(
     requestId: v.id("requests"),
     requestType,
     customerName: v.string(),
+    /** Extrait du dernier message client, seulement pour `new_message`. */
+    messagePreview: v.optional(v.string()),
     read: v.boolean(),
     createdAt: v.number(),
   })
     .index("by_read_and_createdAt", ["read", "createdAt"])
     .index("by_createdAt", ["createdAt"])
     .index("by_requestId", ["requestId"]),
+
+  /**
+   * Repère de lecture des notifications CRM, **par utilisateur**.
+   *
+   * Le drapeau `read` de `notifications` est global : quand quelqu'un ouvrait
+   * la page, le compteur retombait à zéro pour toute l'équipe. On stocke donc
+   * ici, par compte Clerk, la date jusqu'à laquelle il a tout vu — une
+   * notification postérieure à ce repère lui est « non lue », indépendamment
+   * des autres. Un seul document par utilisateur, pas un par notification.
+   */
+  notificationReads: defineTable({
+    clerkId: v.string(),
+    lastReadAt: v.number(),
+  }).index("by_clerkId", ["clerkId"]),
 
   teamMembers: defineTable({
     name: v.string(),
@@ -1058,6 +1173,9 @@ export default defineSchema(
     feedbackSubmittedAt: v.optional(v.number()),
     feedbackClean: v.optional(v.boolean()),
     feedbackTidy: v.optional(v.boolean()),
+    /** L'utilisateur a-t-il déclaré un incident ? Sans incident, le retour ne
+     * remonte pas dans la liste des remarques. */
+    feedbackIncident: v.optional(v.boolean()),
     feedbackIssues: v.optional(v.string()),
     feedbackNotes: v.optional(v.string()),
   })
@@ -1130,12 +1248,30 @@ export default defineSchema(
     decidedAt: v.optional(v.number()),
     feedbackRequestedAt: v.optional(v.number()),
     feedbackSubmittedAt: v.optional(v.number()),
+    /** Retour libéré manuellement par l'équipe quand l'utilisateur ne peut pas remplir le formulaire. */
+    feedbackManualReturnAt: v.optional(v.number()),
+    feedbackManualReturnBy: v.optional(v.string()),
+    /** Dernière relance manuelle envoyée au demandeur pour compléter son retour. */
+    feedbackReminderSentAt: v.optional(v.number()),
     feedbackMileage: v.optional(v.number()),
     feedbackFuelRestored: v.optional(v.boolean()),
     feedbackVehicleEmpty: v.optional(v.boolean()),
     feedbackVehicleClean: v.optional(v.boolean()),
+    /** L'utilisateur a-t-il déclaré un incident ? Sans incident, le retour ne
+     * remonte ni dans les remarques ni chez Mécania. */
+    feedbackIncident: v.optional(v.boolean()),
     feedbackIssues: v.optional(v.string()),
     feedbackNotes: v.optional(v.string()),
+    /** Photos / vidéos jointes au retour pour illustrer un problème constaté. */
+    feedbackMedia: v.optional(
+      v.array(
+        v.object({
+          storageId: v.id("_storage"),
+          contentType: v.optional(v.string()),
+          name: v.optional(v.string()),
+        }),
+      ),
+    ),
     createdAt: v.number(),
   })
     .index("by_vehicleId", ["vehicleId"])
@@ -1159,6 +1295,14 @@ export default defineSchema(
     partsCost: v.optional(v.number()),
     /** Pièces jointes : photos de la panne, de la réparation, factures… */
     attachments: v.optional(v.array(v.id("_storage"))),
+    /** Photos de l'état AVANT intervention (constat, panne). */
+    beforePhotos: v.optional(v.array(v.id("_storage"))),
+    /** Descriptif AVANT intervention : constat, symptômes, état relevé. */
+    beforeNotes: v.optional(v.string()),
+    /** Photos APRÈS intervention (réparation, pièces posées). */
+    afterPhotos: v.optional(v.array(v.id("_storage"))),
+    /** Descriptif des opérations réalisées pendant l'intervention. */
+    afterNotes: v.optional(v.string()),
     createdBy: v.string(),
     createdAt: v.number(),
     updatedAt: v.number(),
@@ -1166,6 +1310,28 @@ export default defineSchema(
     .index("by_vehicleId", ["vehicleId"])
     .index("by_status", ["status"])
     .index("by_dueDate", ["dueDate"]),
+
+  /** Synthèse IA des retours de réservation, une par véhicule. */
+  vehicleRemarkAnalyses: defineTable({
+    vehicleId: v.id("vehicles"),
+    summary: v.string(),
+    /** Hypothèses mécaniques de l'IA, à vérifier avant toute intervention. */
+    diagnosis: v.optional(v.string()),
+    /** Sources techniques trouvées lors de la recherche web liée au véhicule. */
+    webSources: v.optional(v.array(v.object({
+      title: v.string(),
+      url: v.string(),
+    }))),
+    proposals: v.array(v.object({
+      title: v.string(),
+      description: v.string(),
+      priority: v.union(v.literal("low"), v.literal("medium"), v.literal("high")),
+    })),
+    sourceRemarkCount: v.number(),
+    latestRemarkAt: v.number(),
+    model: v.string(),
+    updatedAt: v.number(),
+  }).index("by_vehicleId", ["vehicleId"]),
 
   /** Documents rattachés à un véhicule (carte grise, facture, devis, assurance...). */
   vehicleDocuments: defineTable({
@@ -1214,8 +1380,18 @@ export default defineSchema(
       v.literal("don"),
       v.literal("vente"),
       v.literal("echange"),
+      v.literal("location"),
     ),
     price: v.optional(v.number()),
+    // Unité de facturation d'une location : le prix s'entend « par période ».
+    rentalPeriod: v.optional(
+      v.union(
+        v.literal("jour"),
+        v.literal("semaine"),
+        v.literal("mois"),
+        v.literal("annee"),
+      ),
+    ),
     availableFrom: v.optional(v.number()),
     availableTo: v.optional(v.number()),
     images: v.array(v.id("_storage")),
@@ -1405,24 +1581,53 @@ export default defineSchema(
     description: v.string(),
     category: v.string(),
     subcategory: v.optional(v.string()),
+    /** Niveau le plus précis de la taxonomie Klyd (ex. Robes courtes). */
+    subsubcategory: v.optional(v.string()),
+    /** Poids estimé ou corrigé de l'article, en kilogrammes. */
+    weightKg: v.optional(v.number()),
     brand: v.optional(v.string()),
     size: v.optional(v.string()),
     condition: v.string(),
     color: v.optional(v.string()),
     material: v.optional(v.string()),
     price: v.optional(v.number()),
+    // Prix réellement encaissé. Il peut être inférieur au prix affiché après
+    // acceptation d'une offre ; c'est cette valeur qui sert au chiffre d'affaires.
+    actualSalePrice: v.optional(v.number()),
     parcelSize: v.optional(v.string()),
     gender: v.optional(v.string()),
     style: v.optional(v.string()),
     location: v.optional(v.string()),
     sku: v.optional(v.string()),
+    // Article mis en vente sur Vinted (case cochée dans le stock Klyd).
+    vinted: v.optional(v.boolean()),
+    /** Publication indépendante dans la boutique Klyde (sans lien avec Vinted). */
+    publishedOnBoutique: v.optional(v.boolean()),
+    boutiquePublishedAt: v.optional(v.number()),
+    // Date de mise en vente sur Vinted (pour l'alerte « 3 semaines »).
+    vintedAt: v.optional(v.number()),
+    // Date d'envoi de l'alerte email « 3 semaines sur Vinted » (anti-doublon).
+    vintedAlertSentAt: v.optional(v.number()),
+    // Nombre de fois où l'annonce Vinted a été prolongée après l'alerte de 3 semaines.
+    vintedExtensionCount: v.optional(v.number()),
+    vintedLastExtendedAt: v.optional(v.number()),
+    // Décision prise lorsqu'un article sort de Stock B.
+    stockBDisposition: v.optional(v.union(
+      v.literal("vente_exceptionnelle"),
+      v.literal("magasin"),
+    )),
+    // Enseigne à laquelle l'article est rattaché : Klyd ou Mobifrip.
+    outlet: v.optional(v.union(v.literal("klyd"), v.literal("mobifrip"))),
     quantity: v.number(),
     status: v.union(
       v.literal("stock"),
+      v.literal("stock_b"),
       v.literal("en_ligne"),
       v.literal("en_cours_envoi"),
       v.literal("envoye"),
       v.literal("gagne"),
+      // Invendu en ligne : l'article repart en rayon à la boutique physique.
+      v.literal("magasin"),
       // Anciennes valeurs conservées pour les articles créés avant le suivi.
       v.literal("en_stock"),
       v.literal("reserve"),
@@ -1439,7 +1644,16 @@ export default defineSchema(
     .index("by_status", ["status"])
     .index("by_createdAt", ["createdAt"])
     .index("by_sku", ["sku"])
+    .index("by_boutiquePublished", ["publishedOnBoutique"])
     .index("by_featured", ["featured"]),
+
+  /** Visuels éditoriaux du header de la boutique Klyde. */
+  klydeStorefront: defineTable({
+    key: v.string(),
+    hommeCover: v.optional(v.id("_storage")),
+    femmeCover: v.optional(v.id("_storage")),
+    updatedAt: v.number(),
+  }).index("by_key", ["key"]),
 
   /** Klyde — commandes boutique créées après connexion client. */
   klydeOrders: defineTable({
@@ -1491,7 +1705,7 @@ export default defineSchema(
     /** Documents obligatoires marqués « Signé » par le staff. */
     conventionSignedAt: v.optional(v.number()),
     protocoleSignedAt: v.optional(v.number()),
-    /** Client Stripe associé (facturation du DIB). */
+    /** Client Stripe associé à la facturation. */
     stripeCustomerId: v.optional(v.string()),
     createdAt: v.number(),
   })
@@ -1530,6 +1744,9 @@ export default defineSchema(
     companyId: v.id("bpCompanies"),
     senderRole: v.union(v.literal("client"), v.literal("staff")),
     senderName: v.string(),
+    // Compte Clerk de l'expéditeur : sert à afficher sa photo de profil (résolue
+    // à la lecture via `users.imageUrl`, toujours à jour).
+    senderClerkId: v.optional(v.string()),
     body: v.string(),
     readByClientAt: v.optional(v.number()),
     readByStaffAt: v.optional(v.number()),
@@ -1574,7 +1791,7 @@ export default defineSchema(
     attachments: v.array(v.id("_storage")),
     comment: v.optional(v.string()),
     signature: v.optional(v.id("_storage")),
-    /** Facturation Stripe du DIB (seul flux facturé, au poids). */
+    /** Facturation Stripe des matières payantes, au poids. */
     billing: v.optional(bpBilling),
     createdBy: v.optional(v.string()),
     createdAt: v.number(),
@@ -1680,6 +1897,48 @@ export default defineSchema(
   })
     .index("by_project", ["projectId"])
     .index("by_date", ["date"]),
+
+  /**
+   * Tâches planifiées (nouveau flux) : un encadrant crée une tâche (projet,
+   * date, déplacement, salariés affectés + temps estimé). Chaque salarié
+   * affecté confirme ensuite son temps réel depuis « Pointages ». Distinct de
+   * `ptTimeEntries` (pointages historiques, inchangés).
+   */
+  ptTasks: defineTable({
+    projectId: v.id("ptProjects"),
+    /** Dénormalisé depuis le projet à la création. */
+    clientId: v.id("ptClients"),
+    date: v.number(),
+    travel: v.optional(
+      v.object({
+        roundTrips: v.number(),
+        distanceKm: v.number(),
+        ratePerKm: v.optional(v.number()),
+        cost: v.number(),
+      }),
+    ),
+    notes: v.optional(v.string()),
+    documentIds: v.array(v.id("ptDocuments")),
+    assignments: v.array(
+      v.object({
+        employeeId: v.id("ptEmployees"),
+        /** Snapshot du taux horaire à la création de la tâche. */
+        hourlyRate: v.number(),
+        /** Temps estimé à la création (heures). */
+        estimatedHours: v.number(),
+        /** Temps réel confirmé par le salarié (heures). */
+        confirmedHours: v.optional(v.number()),
+        confirmedAt: v.optional(v.number()),
+      }),
+    ),
+    /** « confirmed » dès que toutes les affectations ont un temps réel. */
+    status: v.union(v.literal("pending"), v.literal("confirmed")),
+    createdAt: v.number(),
+    createdBy: v.optional(v.string()),
+  })
+    .index("by_project", ["projectId"])
+    .index("by_date", ["date"])
+    .index("by_status", ["status"]),
 
   /** Fournisseurs. */
   ptSuppliers: defineTable({
@@ -1793,6 +2052,10 @@ export default defineSchema(
     webhookResponseBody: v.optional(v.string()),
     requestedAt: v.number(),
     requestedBy: v.string(),
+    /** Horodatage du dernier email de prévenance de fin de contrat. */
+    endNoticeSentAt: v.optional(v.number()),
+    /** Paliers de prévenance déjà envoyés (22, 15, 3 jours) — évite les doublons. */
+    endNoticeSentThresholds: v.optional(v.array(v.number())),
   })
     .index("by_employee_and_requestedAt", ["employeeId", "requestedAt"])
     .index("by_requestedAt", ["requestedAt"]),
@@ -1803,11 +2066,19 @@ export default defineSchema(
    * `requests` de la recyclerie (autre métier, autres droits).
    */
   feedback: defineTable({
-    /** App concernée par le retour (clé de tuile du portail Mes Outils). */
-    app: feedbackApp,
+    /**
+     * App concernée par le retour (clé de tuile du portail Mes Outils).
+     * Absente pour les retours de type `nouvelle_application` : l'idée ne vise
+     * par définition aucune app existante.
+     */
+    app: v.optional(feedbackApp),
     type: feedbackType,
     description: v.string(),
+    /** Captures, photos ou documents fournis avec le retour. */
+    attachments: v.optional(v.array(v.id("_storage"))),
     status: feedbackStatus,
+    /** Urgence choisie par l'auteur, modifiable par lui après coup. */
+    priority: v.optional(feedbackPriority),
     /** Auteur : identité Clerk figée à la création. */
     authorClerkId: v.string(),
     authorEmail: v.string(),
@@ -1840,6 +2111,36 @@ export default defineSchema(
     fromTeam: v.boolean(),
     createdAt: v.number(),
   }).index("by_feedback_and_createdAt", ["feedbackId", "createdAt"]),
+
+  /* ─── Agents polyvalents (Recyclerie) ─────────────────────────────────────
+   * Gestion des ouvriers polyvalents : un catalogue de tâches, une liste
+   * d'ouvriers (nom/prénom), et des activités qui affectent un ouvrier à une
+   * tâche sur un créneau daté. Distinct de `teamMembers` (agents permanents). */
+  polyvalentTasks: defineTable({
+    name: v.string(),
+    createdBy: v.string(),
+    createdAt: v.number(),
+  }).index("by_name", ["name"]),
+
+  polyvalentWorkers: defineTable({
+    firstName: v.string(),
+    lastName: v.string(),
+    createdBy: v.string(),
+    createdAt: v.number(),
+  }),
+
+  polyvalentActivities: defineTable({
+    taskId: v.id("polyvalentTasks"),
+    workerId: v.id("polyvalentWorkers"),
+    /** Début et fin du créneau, en millisecondes epoch (date + heure). */
+    startAt: v.number(),
+    endAt: v.number(),
+    createdBy: v.string(),
+    createdAt: v.number(),
+  })
+    .index("by_worker", ["workerId"])
+    .index("by_task", ["taskId"])
+    .index("by_startAt", ["startAt"]),
   },
   { schemaValidation: false },
 );
