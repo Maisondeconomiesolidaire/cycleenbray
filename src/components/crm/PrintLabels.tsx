@@ -9,7 +9,6 @@ export interface LabelArticle {
   title: string;
   price: number;
   internalReference?: string;
-  gdrReference?: string;
   category: string;
   condition?: string;
 }
@@ -116,7 +115,7 @@ function LabelCard({
   article: LabelArticle;
   preview: boolean;
 }) {
-  const ref = article.internalReference ?? article.gdrReference ?? article._id.slice(-8);
+  const ref = article.internalReference ?? article._id.slice(-8);
 
   return (
     <div

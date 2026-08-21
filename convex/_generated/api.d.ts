@@ -10,11 +10,13 @@
 
 import type * as ai from "../ai.js";
 import type * as arrivages from "../arrivages.js";
+import type * as articleQrCodes from "../articleQrCodes.js";
 import type * as articles from "../articles.js";
 import type * as ateliers from "../ateliers.js";
 import type * as bennespro from "../bennespro.js";
 import type * as bennesproClientVehicles from "../bennesproClientVehicles.js";
 import type * as bikes from "../bikes.js";
+import type * as caisses from "../caisses.js";
 import type * as clerkMigration from "../clerkMigration.js";
 import type * as clients from "../clients.js";
 import type * as community from "../community.js";
@@ -39,6 +41,7 @@ import type * as mesoutilsEmails from "../mesoutilsEmails.js";
 import type * as mesoutilsNotifications from "../mesoutilsNotifications.js";
 import type * as messages from "../messages.js";
 import type * as notifications from "../notifications.js";
+import type * as paymentLinks from "../paymentLinks.js";
 import type * as permissions from "../permissions.js";
 import type * as pointeuse from "../pointeuse.js";
 import type * as points from "../points.js";
@@ -66,11 +69,13 @@ import type {
 declare const fullApi: ApiFromModules<{
   ai: typeof ai;
   arrivages: typeof arrivages;
+  articleQrCodes: typeof articleQrCodes;
   articles: typeof articles;
   ateliers: typeof ateliers;
   bennespro: typeof bennespro;
   bennesproClientVehicles: typeof bennesproClientVehicles;
   bikes: typeof bikes;
+  caisses: typeof caisses;
   clerkMigration: typeof clerkMigration;
   clients: typeof clients;
   community: typeof community;
@@ -95,6 +100,7 @@ declare const fullApi: ApiFromModules<{
   mesoutilsNotifications: typeof mesoutilsNotifications;
   messages: typeof messages;
   notifications: typeof notifications;
+  paymentLinks: typeof paymentLinks;
   permissions: typeof permissions;
   pointeuse: typeof pointeuse;
   points: typeof points;

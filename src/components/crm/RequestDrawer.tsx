@@ -1402,22 +1402,11 @@ function GestionTab({
 
   const [scheduleOpen, setScheduleOpen] = useState(false);
   const patchVisit = useMutation(api.requests.patchManagement);
-  const setGdrReference = useMutation(api.articles.setGdrReference);
-  const [gdrInput, setGdrInput] = useState("");
-  const [gdrSaving, setGdrSaving] = useState(false);
-  const [gdrError, setGdrError] = useState("");
   const num = (s: string) => (s.trim() === "" ? null : Number(s));
   const persona = usePersona();
   // Auteur des modifications : persona (compte accueil partagé) sinon le compte.
   const currentUser =
     persona ?? user?.fullName ?? user?.primaryEmailAddress?.emailAddress ?? undefined;
-
-  const linkedArticle = useQuery(
-    api.articles.getPublic,
-    request.type === "article" && request.article?.articleId
-      ? { id: request.article.articleId }
-      : "skip",
-  );
 
   const stepBlockers: Record<string, string> = {};
   const isFullProcess =
@@ -1446,11 +1435,6 @@ function GestionTab({
       stepBlockers[STEP.prestaPlanifiee] =
         "Programmez une date avant de cocher cette étape.";
   }
-  if (request.type === "article" && linkedArticle && !linkedArticle.gdrReference) {
-    stepBlockers[STEP.factureReglee] =
-      "Renseignez la référence externe de l'article avant de clôturer la vente.";
-  }
-
   return (
     <fieldset
       disabled={!canUpdate}
@@ -1490,60 +1474,6 @@ function GestionTab({
               Choisissez C1, C2 ou C3 pour démarrer le suivi du process.
             </p>
           )}
-        </section>
-      )}
-
-      {/* Raccourci : renseigner la réf. externe (GDR) sans quitter la demande */}
-      {request.type === "article" && linkedArticle && !linkedArticle.gdrReference && (
-        <section className="rounded-2xl border border-amber-500/30 bg-amber-500/5 p-4">
-          <SectionTitle>Référence externe (GDR)</SectionTitle>
-          <p className="mb-3 text-xs text-amber-300/90">
-            Renseignez la référence GDR de l'article (15 chiffres) directement ici
-            pour pouvoir clôturer la vente, sans passer par le stock.
-          </p>
-          <div className="flex flex-col gap-2 sm:flex-row sm:items-start">
-            <div className="flex-1">
-              <Input
-                value={gdrInput}
-                onChange={(e) => {
-                  setGdrInput(e.target.value.replace(/\D/g, "").slice(0, 15));
-                  setGdrError("");
-                }}
-                inputMode="numeric"
-                placeholder="15 chiffres"
-              />
-              {gdrError && (
-                <p className="mt-1 text-xs text-red-400">{gdrError}</p>
-              )}
-            </div>
-            <Button
-              type="button"
-              disabled={gdrSaving || gdrInput.length === 0}
-              onClick={async () => {
-                if (!/^\d{15}$/.test(gdrInput)) {
-                  setGdrError("La référence GDR doit contenir exactement 15 chiffres.");
-                  return;
-                }
-                setGdrSaving(true);
-                setGdrError("");
-                try {
-                  await setGdrReference({
-                    id: request.article!.articleId!,
-                    gdrReference: gdrInput,
-                  });
-                  setGdrInput("");
-                } catch (err) {
-                  setGdrError(
-                    err instanceof Error ? err.message : "Enregistrement impossible.",
-                  );
-                } finally {
-                  setGdrSaving(false);
-                }
-              }}
-            >
-              {gdrSaving ? <Spinner className="h-4 w-4" /> : "Enregistrer"}
-            </Button>
-          </div>
         </section>
       )}
 
@@ -2781,11 +2711,6 @@ function ArticleRequestPreview({
           {article.internalReference && (
             <span className="rounded-full bg-[var(--crm-surface-2)] px-2.5 py-1 text-[11px] font-mono text-zinc-400">
               Réf. interne {article.internalReference}
-            </span>
-          )}
-          {article.gdrReference && (
-            <span className="rounded-full bg-[var(--crm-surface-2)] px-2.5 py-1 text-[11px] font-mono text-zinc-400">
-              Réf. {article.gdrReference}
             </span>
           )}
           {article.weightKg !== undefined && (

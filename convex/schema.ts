@@ -342,6 +342,11 @@ const requestPayment = v.object({
   stripeSessionId: v.optional(v.string()),
   stripePaymentIntentId: v.optional(v.string()),
   paidAt: v.optional(v.number()),
+  /** Remboursement Stripe déclenché depuis le CRM (montant en euros). */
+  stripeRefundId: v.optional(v.string()),
+  refundedAmount: v.optional(v.number()),
+  refundedAt: v.optional(v.number()),
+  refundedBy: v.optional(v.string()),
 });
 
 const veloDetails = v.object({
@@ -398,9 +403,16 @@ export default defineSchema(
     weightKg: v.optional(v.number()),
     // Emplacement physique de l'article en boutique / réserve.
     location: v.optional(v.string()),
+    // Caisse physique (bac étiqueté d'un QR code) qui contient l'article.
+    // Remplace progressivement le champ texte `location`.
+    caisseId: v.optional(v.id("caisses")),
     originalPrice: v.optional(v.number()),
     internalReference: v.optional(v.string()),
-    gdrReference: v.optional(v.string()),
+    /**
+     * Recyclerie qui détient physiquement l'article : le client vient le
+     * retirer sur ce site, et la boutique en ligne permet de filtrer dessus.
+     */
+    site: v.optional(v.union(v.literal("60"), v.literal("76"))),
     category: v.string(),
     subcategory: v.optional(v.string()),
     condition: v.string(),
@@ -430,8 +442,48 @@ export default defineSchema(
   })
     .index("by_status", ["status"])
     .index("by_internalReference", ["internalReference"])
-    .index("by_gdrReference", ["gdrReference"])
-    .index("by_productOfDay", ["productOfDay"]),
+    .index("by_productOfDay", ["productOfDay"])
+    .index("by_caisse", ["caisseId"])
+    .index("by_site", ["site"]),
+
+  /**
+   * Pool de QR codes d'articles imprimés À L'AVANCE.
+   *
+   * L'équipe imprime une planche d'étiquettes vierges, les colle sur les objets
+   * au fil de la collecte, puis crée les fiches en scannant le code déjà posé.
+   * Cela évite l'aller-retour « créer la fiche → imprimer → retrouver l'objet →
+   * coller ». La référence a le même format que `articles.internalReference`
+   * (6 chiffres), donc un code scanné se comporte exactement comme aujourd'hui.
+   */
+  articleQrCodes: defineTable({
+    reference: v.string(),
+    /** Renseigné dès que le code est attribué à un article. */
+    articleId: v.optional(v.id("articles")),
+    assignedAt: v.optional(v.number()),
+    /** Horodatage de la planche d'impression, pour regrouper un lot de codes. */
+    batchAt: v.number(),
+    createdAt: v.number(),
+  })
+    .index("by_reference", ["reference"])
+    .index("by_article", ["articleId"])
+    .index("by_batch", ["batchAt"]),
+
+  /**
+   * Caisses de rangement de la recyclerie : chaque caisse porte un QR code
+   * collé dessus. On scanne la caisse à l'ajout d'un article pour l'y ranger,
+   * et on la rescanne pour voir tout ce qu'elle contient.
+   */
+  caisses: defineTable({
+    /** Code imprimé sur le QR code, ex. « CA-0007 ». Unique. */
+    code: v.string(),
+    /** Nom libre donné par l'équipe, ex. « Vaisselle réserve ». */
+    label: v.optional(v.string()),
+    /** Zone / lieu où se trouve la caisse, ex. « Réserve », « Boutique ». */
+    zone: v.optional(v.string()),
+    notes: v.optional(v.string()),
+    archived: v.optional(v.boolean()),
+    createdAt: v.number(),
+  }).index("by_code", ["code"]),
 
   /** Articles sauvegardés (wishlist) par les clients connectés. */
   wishlists: defineTable({
@@ -955,6 +1007,35 @@ export default defineSchema(
     createdAt: v.number(),
     completedAt: v.optional(v.number()),
   }).index("by_stripeSessionId", ["stripeSessionId"]),
+
+  /**
+   * Lien de paiement généré depuis le CRM : permet de faire régler en ligne
+   * une demande boutique existante, ou un ou plusieurs articles choisis, sans
+   * passer par le panier. Le `token` est l'identifiant public du lien.
+   */
+  paymentLinks: defineTable({
+    token: v.string(),
+    articleIds: v.array(v.id("articles")),
+    /** Demande boutique réglée par ce lien (absent pour un lien ad hoc). */
+    requestId: v.optional(v.id("requests")),
+    /** Coordonnées connues à la création, pour préremplir la page de paiement. */
+    customer: v.optional(customer),
+    /** Montant figé à la création du lien (euros). */
+    amount: v.number(),
+    status: v.union(
+      v.literal("pending"),
+      v.literal("paid"),
+      v.literal("cancelled"),
+    ),
+    stripePaymentIntentId: v.optional(v.string()),
+    /** Horodatage du dernier envoi par email. */
+    sentAt: v.optional(v.number()),
+    createdAt: v.number(),
+    createdBy: v.optional(v.string()),
+    paidAt: v.optional(v.number()),
+  })
+    .index("by_token", ["token"])
+    .index("by_request", ["requestId"]),
 
   publicStripeCheckoutDrafts: defineTable({
     articleIds: v.array(v.id("articles")),

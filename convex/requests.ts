@@ -30,7 +30,8 @@ import {
   requestLostReason,
   requestType,
 } from "./schema";
-import { isAwaitingInvoicePayment, resolveProcess } from "./processes";
+import { PICKUP_DEADLINE_DAYS } from "./emails";
+import { isAwaitingInvoicePayment, resolveProcess, STEP } from "./processes";
 import { vehicleBusyReason } from "./fleet";
 import { internal } from "./_generated/api";
 import { Doc, Id } from "./_generated/dataModel";
@@ -141,9 +142,11 @@ async function createNewRequestNotification(
     createdAt: Date.now(),
   });
 
-  // Email de confirmation au client (Resend).
+  // Email de confirmation au client (Resend). Une commande déjà réglée en ligne
+  // reçoit un message d'achat, avec le délai de retrait de 5 jours.
   const request = await ctx.db.get(args.requestId);
   if (request?.customer.email) {
+    const paid = request.payment?.status === "paid";
     await ctx.scheduler.runAfter(0, internal.emails.sendRequestConfirmation, {
       email: request.customer.email,
       name: customerFullName(request.customer),
@@ -151,6 +154,11 @@ async function createNewRequestNotification(
       type: request.type,
       requestId: String(request._id),
       article: await emailArticlePreview(ctx, request),
+      paid,
+      pickupDeadline: paid
+        ? (request.payment?.paidAt ?? request.createdAt) +
+          PICKUP_DEADLINE_DAYS * 24 * 60 * 60 * 1000
+        : undefined,
     });
   }
 
@@ -1126,10 +1134,208 @@ export const attachStripeSessionToPublicDraft = internalMutation({
   },
 });
 
+/** Flux custom : mémorise le PaymentIntent dès sa création. */
+export const attachStripePaymentIntentToPublicDraft = internalMutation({
+  args: {
+    draftId: v.id("publicStripeCheckoutDrafts"),
+    stripePaymentIntentId: v.string(),
+  },
+  handler: async (ctx, { draftId, stripePaymentIntentId }) => {
+    await ctx.db.patch(draftId, { stripePaymentIntentId });
+  },
+});
+
+/**
+ * Avancement d'une demande boutique qui vient d'être payée.
+ *
+ * Le paiement ne solde PAS la demande : il ne coche que « Paiement validé ».
+ * La commande reste ouverte (colonne « Prestation planifiée » du CRM) tant que
+ * l'équipe n'a pas constaté le retrait en boutique. Les demandes créées avant
+ * l'introduction de ce process gardent leurs anciennes étapes : on les solde
+ * comme avant pour ne pas les laisser bloquées.
+ */
+function paidBoutiqueProgress(steps: string[]): {
+  completedSteps: number;
+  outcome: "open" | "gagnee";
+} {
+  const paidIndex = steps.indexOf(STEP.paiementValide);
+  if (paidIndex === -1) {
+    return { completedSteps: steps.length, outcome: "gagnee" };
+  }
+  const completedSteps = paidIndex + 1;
+  return {
+    completedSteps,
+    outcome: completedSteps >= steps.length ? "gagnee" : "open",
+  };
+}
+
+/**
+ * Encaissement d'un lien de paiement : marque les articles vendus et solde la
+ * demande liée — ou en crée une quand le lien a été généré depuis un article,
+ * sans demande préalable. Idempotent : rejouer l'appel ne crée rien de plus.
+ */
+export const finalizePaymentLink = internalMutation({
+  args: {
+    token: v.string(),
+    stripePaymentIntentId: v.string(),
+    customer: v.optional(customerArg),
+    comment: v.optional(v.string()),
+  },
+  handler: async (ctx, { token, stripePaymentIntentId, customer, comment }) => {
+    const link = await ctx.db
+      .query("paymentLinks")
+      .withIndex("by_token", (q) => q.eq("token", token))
+      .unique();
+    if (!link) throw new Error("Lien de paiement introuvable.");
+    if (link.status === "paid") {
+      return { requestId: link.requestId ?? null };
+    }
+
+    const now = Date.now();
+    const payment = {
+      method: "cb" as const,
+      status: "paid" as const,
+      validated: true,
+      captured: true,
+      provider: "stripe" as const,
+      stripePaymentIntentId,
+      paidAt: now,
+    };
+
+    const articles: Array<{ articleId: Id<"articles">; articleTitle: string }> = [];
+    for (const articleId of link.articleIds) {
+      const article = await ctx.db.get(articleId);
+      if (!article) continue;
+      articles.push({ articleId, articleTitle: article.title });
+      if (article.status !== "vendu") {
+        await ctx.db.patch(articleId, { status: "vendu" });
+      }
+    }
+
+    let requestId = link.requestId ?? null;
+    if (requestId) {
+      const request = await ctx.db.get(requestId);
+      if (!request) throw new Error("Demande introuvable.");
+      const progress = paidBoutiqueProgress(request.processSteps);
+      await ctx.db.patch(requestId, {
+        payment,
+        outcome: progress.outcome,
+        completedSteps: progress.completedSteps,
+        updatedAt: now,
+      });
+    } else {
+      // Lien généré depuis un article : on crée la demande boutique payée.
+      const linkCustomer = normalizeCustomer(
+        customer ?? link.customer ?? {
+          firstName: "Client",
+          lastName: "boutique",
+          email: "",
+          phone: "",
+        },
+      );
+      const steps = resolveProcess("article");
+      const progress = paidBoutiqueProgress(steps);
+      const reference = await generateReference(ctx);
+      requestId = await ctx.db.insert("requests", {
+        type: "article",
+        stage: "nouveau",
+        outcome: progress.outcome,
+        requestOrigin: "external",
+        complete: isArticleComplete(linkCustomer),
+        processSteps: steps,
+        completedSteps: progress.completedSteps,
+        customer: linkCustomer,
+        comment,
+        photos: [],
+        article: articles[0],
+        articles,
+        payment,
+        createdAt: now,
+        updatedAt: now,
+        reference,
+      });
+      await createNewRequestNotification(ctx, {
+        requestId,
+        requestType: "article",
+        customerName: customerFullName(linkCustomer),
+      });
+    }
+
+    await ctx.db.patch(link._id, {
+      status: "paid",
+      stripePaymentIntentId,
+      paidAt: now,
+      ...(customer && !link.customer ? { customer: normalizeCustomer(customer) } : {}),
+    });
+
+    return { requestId };
+  },
+});
+
+/* ─── Remboursement d'une commande boutique ──────────────────────────────── */
+
+/** Lit le paiement d'une demande pour l'action de remboursement Stripe. */
+export const paymentForRefund = internalQuery({
+  args: { requestId: v.id("requests") },
+  handler: async (ctx, { requestId }) => {
+    const request = await ctx.db.get(requestId);
+    if (!request) return null;
+    return {
+      payment: request.payment ?? null,
+      quoteAmount: request.quoteAmount,
+      reference: request.reference,
+      articleIds: requestArticleIds(request),
+    };
+  },
+});
+
+/**
+ * Enregistre le remboursement Stripe sur la demande.
+ *
+ * Le paiement reste marqué « payé » — il l'a bien été — mais porte désormais sa
+ * trace de remboursement, et la demande est fermée en « perdue » : la commande
+ * n'ira pas au bout. Les articles repartent en vente (« disponible ») puisque
+ * plus personne ne les a achetés.
+ */
+export const markRefunded = internalMutation({
+  args: {
+    requestId: v.id("requests"),
+    stripeRefundId: v.string(),
+    refundedAmount: v.number(),
+    refundedBy: v.optional(v.string()),
+  },
+  handler: async (ctx, { requestId, stripeRefundId, refundedAmount, refundedBy }) => {
+    const request = await ctx.db.get(requestId);
+    if (!request) throw new Error("Demande introuvable.");
+    if (!request.payment) throw new Error("Cette demande n'a aucun paiement.");
+    const now = Date.now();
+    await ctx.db.patch(requestId, {
+      payment: {
+        ...request.payment,
+        stripeRefundId,
+        refundedAmount,
+        refundedAt: now,
+        refundedBy,
+      },
+      outcome: "perdue",
+      lostReason: "annulation_client",
+      updatedAt: now,
+    });
+    for (const articleId of requestArticleIds(request)) {
+      const article = await ctx.db.get(articleId);
+      if (article && article.status === "vendu") {
+        await ctx.db.patch(articleId, { status: "disponible" });
+      }
+    }
+    return null;
+  },
+});
+
 export const finalizePublicStripeCheckout = internalMutation({
   args: {
     draftId: v.id("publicStripeCheckoutDrafts"),
-    stripeSessionId: v.string(),
+    /** Flux Checkout hébergé. Absent pour le flux custom (Payment Element). */
+    stripeSessionId: v.optional(v.string()),
     stripePaymentIntentId: v.optional(v.string()),
   },
   handler: async (ctx, { draftId, stripeSessionId, stripePaymentIntentId }) => {
@@ -1140,8 +1346,19 @@ export const finalizePublicStripeCheckout = internalMutation({
       return { requestId: draft.requestId };
     }
 
-    if (draft.stripeSessionId && draft.stripeSessionId !== stripeSessionId) {
+    if (
+      stripeSessionId &&
+      draft.stripeSessionId &&
+      draft.stripeSessionId !== stripeSessionId
+    ) {
       throw new Error("Cette session Stripe ne correspond pas au panier en cours.");
+    }
+    if (
+      stripePaymentIntentId &&
+      draft.stripePaymentIntentId &&
+      draft.stripePaymentIntentId !== stripePaymentIntentId
+    ) {
+      throw new Error("Ce paiement Stripe ne correspond pas au panier en cours.");
     }
 
     const articles = [];
@@ -1161,14 +1378,15 @@ export const finalizePublicStripeCheckout = internalMutation({
     }
 
     const steps = resolveProcess("article");
+    const progress = paidBoutiqueProgress(steps);
     const requestId = await ctx.db.insert("requests", {
       type: "article",
       stage: "nouveau",
-      outcome: "gagnee",
+      outcome: progress.outcome,
       requestOrigin: "external",
       complete: isArticleComplete(draft.customer),
       processSteps: steps,
-      completedSteps: steps.length,
+      completedSteps: progress.completedSteps,
       customer: draft.customer,
       comment: draft.comment || undefined,
       photos: [],
@@ -1196,8 +1414,8 @@ export const finalizePublicStripeCheckout = internalMutation({
     });
 
     await ctx.db.patch(draftId, {
-      stripeSessionId,
-      stripePaymentIntentId,
+      ...(stripeSessionId ? { stripeSessionId } : {}),
+      ...(stripePaymentIntentId ? { stripePaymentIntentId } : {}),
       status: "completed",
       requestId,
       completedAt: Date.now(),
