@@ -44,6 +44,7 @@ import { Drawer } from "./components/ui/Drawer";
 import { cn } from "./lib/cn";
 import { useUpload } from "./lib/useUpload";
 import { UpdateAvailableBanner } from "./components/UpdateAvailableBanner";
+import { ProfileSync } from "./components/ProfileSync";
 import { ConfirmRoot } from "./lib/confirm";
 
 type BikeStatus = "inactive" | "available" | "purchase_pending" | "sold";
@@ -272,6 +273,9 @@ function formFromBike(bike: BikeWithPhotos): BikeForm {
 export default function App() {
   return (
     <>
+    {/* Hors de toute garde d'authentification : l'origine de l'inscription se
+        constitue pendant la visite déconnectée. */}
+    <ProfileSync app="cycleenbray" />
     <UpdateAvailableBanner appName="Cycle en Bray" />
     <Routes>
       <Route element={<PublicLayout />}>

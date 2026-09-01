@@ -32,6 +32,8 @@ import {
 } from "./schema";
 import { PICKUP_DEADLINE_DAYS } from "./emails";
 import { isAwaitingInvoicePayment, resolveProcess, STEP } from "./processes";
+import { applyDiscount, assertUsableDiscount } from "./discountCodes";
+import { scheduleStripeSync } from "./stripeCatalog";
 import { vehicleBusyReason } from "./fleet";
 import { internal } from "./_generated/api";
 import { Doc, Id } from "./_generated/dataModel";
@@ -164,21 +166,99 @@ async function createNewRequestNotification(
 
   // Email à l'équipe recyclerie — décalé pour rester sous la limite Resend
   // (2 req/s) avec l'email client. E. Carette est ajouté uniquement pour
-  // les demandes d'aérogommage par l'action d'envoi.
+  // les demandes d'aérogommage par l'action d'envoi, et un dépôt part à
+  // l'équipe de SA recyclerie : d'où le site transmis ici.
   if (request) {
     await ctx.scheduler.runAfter(1200, internal.emails.sendNewRequestToStaff, {
       type: request.type,
       reference: request.reference ?? String(request._id).slice(-6),
       customerName: customerFullName(request.customer),
       article: await emailArticlePreview(ctx, request),
+      site: request.depot?.site ?? request.site,
     });
   }
 }
 
-async function generateReference(ctx: MutationCtx): Promise<string> {
+export async function generateReference(ctx: MutationCtx): Promise<string> {
   const all = await ctx.db.query("requests").collect();
   const n = all.length + 1;
   return n.toString().padStart(6, "0");
+}
+
+/**
+ * Demande créée par une vente au comptoir (caisse).
+ *
+ * Le client est devant nous, il repart avec l'objet : la demande naît donc
+ * ACHEVÉE — « Paiement validé » puis « Retrait effectué » cochés, issue
+ * « gagnée ». Elle ne sert pas à piloter un travail restant mais à nourrir
+ * l'historique du client, exactement comme une commande en ligne retirée.
+ */
+export async function createInShopSaleRequest(
+  ctx: MutationCtx,
+  args: {
+    customer: {
+      firstName: string;
+      lastName: string;
+      email: string;
+      phone: string;
+      address?: string;
+      postalCode?: string;
+      city?: string;
+    };
+    articles: Array<{ articleId: Id<"articles">; articleTitle: string }>;
+    total: number;
+    paymentMethod: "cb" | "especes";
+    receiptNumber?: string;
+    stripePaymentIntentId?: string;
+  },
+): Promise<Id<"requests">> {
+  const customer = normalizeCustomer(args.customer);
+  const steps = resolveProcess("article");
+  const reference = await generateReference(ctx);
+  const now = Date.now();
+
+  const requestId = await ctx.db.insert("requests", {
+    type: "article",
+    stage: "nouveau",
+    outcome: "gagnee",
+    requestOrigin: "internal",
+    complete: isArticleComplete(customer),
+    processSteps: steps,
+    // Vente en personne : les deux jalons sont franchis d'un coup.
+    completedSteps: steps.length,
+    processLog: steps.map((_, index) => ({
+      step: index,
+      by: "Caisse",
+      at: now,
+    })),
+    customer,
+    comment: args.receiptNumber
+      ? `Vente en boutique — ticket ${args.receiptNumber}.`
+      : "Vente en boutique.",
+    photos: [],
+    article: args.articles[0],
+    articles: args.articles,
+    quoteAmount: args.total,
+    payment: {
+      method: args.paymentMethod,
+      status: "paid",
+      validated: true,
+      captured: true,
+      ...(args.stripePaymentIntentId
+        ? {
+            provider: "stripe" as const,
+            stripePaymentIntentId: args.stripePaymentIntentId,
+          }
+        : {}),
+      paidAt: now,
+    },
+    createdAt: now,
+    updatedAt: now,
+    reference,
+  });
+
+  await upsertRequestCustomer(ctx, customer, "/crm/caisse");
+  return requestId;
 }
 
 async function upsertRequestCustomer(
@@ -989,6 +1069,7 @@ export const submitArticleReservation = mutation({
     const reference = await generateReference(ctx);
     // L'article passe en « réservé » dès la demande.
     await ctx.db.patch(articleId, { status: "reserve" });
+    await scheduleStripeSync(ctx, articleId);
     const requestId = await ctx.db.insert("requests", {
       type: "article",
       stage: "nouveau",
@@ -1053,6 +1134,7 @@ export const submitArticleCartReservation = mutation({
     const reference = await generateReference(ctx);
     for (const articleId of uniqueArticleIds) {
       await ctx.db.patch(articleId, { status: "reserve" });
+      await scheduleStripeSync(ctx, articleId);
     }
 
     const requestId = await ctx.db.insert("requests", {
@@ -1093,8 +1175,9 @@ export const createPublicStripeCheckoutDraft = internalMutation({
     customer: customerArg,
     comment: v.optional(v.string()),
     articleIds: v.array(v.id("articles")),
+    discountCode: v.optional(v.string()),
   },
-  handler: async (ctx, { customer, comment, articleIds }) => {
+  handler: async (ctx, { customer, comment, articleIds, discountCode }) => {
     customer = normalizeCustomer(customer);
     const uniqueArticleIds = Array.from(new Set(articleIds));
     if (uniqueArticleIds.length === 0) {
@@ -1111,15 +1194,34 @@ export const createPublicStripeCheckoutDraft = internalMutation({
       total += article.price;
     }
 
+    // La remise est relue depuis le bon lui-même : le navigateur n'envoie
+    // qu'un code, jamais un pourcentage ni un montant.
+    let discountCodeId: Id<"discountCodes"> | undefined;
+    let discountPercent: number | undefined;
+    let discountAmount: number | undefined;
+    let payable = total;
+    if (discountCode?.trim()) {
+      const discount = await assertUsableDiscount(ctx, discountCode);
+      const applied = applyDiscount(total, discount.percent);
+      discountCodeId = discount._id;
+      discountPercent = discount.percent;
+      discountAmount = applied.discountAmount;
+      payable = applied.total;
+    }
+
     const draftId = await ctx.db.insert("publicStripeCheckoutDrafts", {
       articleIds: uniqueArticleIds,
       customer,
       comment,
-      total,
+      total: payable,
+      subtotal: total,
+      discountCodeId,
+      discountPercent,
+      discountAmount,
       status: "pending",
       createdAt: Date.now(),
     });
-    return { draftId, total };
+    return { draftId, total: payable, subtotal: total, discountPercent, discountAmount };
   },
 });
 
@@ -1209,6 +1311,7 @@ export const finalizePaymentLink = internalMutation({
       articles.push({ articleId, articleTitle: article.title });
       if (article.status !== "vendu") {
         await ctx.db.patch(articleId, { status: "vendu" });
+        await scheduleStripeSync(ctx, articleId);
       }
     }
 
@@ -1223,6 +1326,9 @@ export const finalizePaymentLink = internalMutation({
         completedSteps: progress.completedSteps,
         updatedAt: now,
       });
+      if (progress.outcome === "gagnee" && request.outcome !== "gagnee") {
+        await scheduleReviewInvite(ctx, request);
+      }
     } else {
       // Lien généré depuis un article : on crée la demande boutique payée.
       const linkCustomer = normalizeCustomer(
@@ -1325,6 +1431,7 @@ export const markRefunded = internalMutation({
       const article = await ctx.db.get(articleId);
       if (article && article.status === "vendu") {
         await ctx.db.patch(articleId, { status: "disponible" });
+        await scheduleStripeSync(ctx, articleId);
       }
     }
     return null;
@@ -1375,7 +1482,13 @@ export const finalizePublicStripeCheckout = internalMutation({
     const reference = await generateReference(ctx);
     for (const articleId of draft.articleIds) {
       await ctx.db.patch(articleId, { status: "vendu" });
+      await scheduleStripeSync(ctx, articleId);
     }
+
+    const discount = draft.discountCodeId
+      ? await ctx.db.get(draft.discountCodeId)
+      : null;
+    const discountCodeValue = discount?.code;
 
     const steps = resolveProcess("article");
     const progress = paidBoutiqueProgress(steps);
@@ -1401,11 +1514,28 @@ export const finalizePublicStripeCheckout = internalMutation({
         stripeSessionId,
         stripePaymentIntentId,
         paidAt: now,
+        ...(draft.discountPercent !== undefined
+          ? {
+              discountCode: discountCodeValue,
+              discountPercent: draft.discountPercent,
+              discountAmount: draft.discountAmount,
+              subtotal: draft.subtotal,
+            }
+          : {}),
       },
       createdAt: now,
       updatedAt: now,
       reference,
     });
+
+    if (discount && discount.status !== "used") {
+      await ctx.db.patch(discount._id, {
+        status: "used",
+        usedAt: now,
+        usedByRequestId: requestId,
+        discountAmount: draft.discountAmount,
+      });
+    }
 
     await createNewRequestNotification(ctx, {
       requestId,
@@ -1563,6 +1693,28 @@ export const get = query({
   },
 });
 
+/**
+ * Invitation à noter la Recyclerie sur Google, à l'issue d'une demande gagnée.
+ *
+ * Envoyée une seule fois par demande (`reviewInviteSentAt`) : une demande
+ * rouverte puis re-soldée ne relance pas le client. Sans email client, il n'y
+ * a rien à envoyer. Le lien dépend du site de traitement, la Recyclerie 60
+ * servant de défaut quand il n'est pas renseigné.
+ */
+async function scheduleReviewInvite(ctx: MutationCtx, request: Doc<"requests">) {
+  if (request.reviewInviteSentAt) return;
+  const email = request.customer.email?.trim();
+  if (!email) return;
+  await ctx.db.patch(request._id, { reviewInviteSentAt: Date.now() });
+  await ctx.scheduler.runAfter(0, internal.emails.sendReviewInvite, {
+    email,
+    name: customerFullName(request.customer) || "à vous",
+    reference: request.reference ?? String(request._id).slice(-6),
+    type: request.type,
+    site: request.site ?? "60",
+  });
+}
+
 export const setOutcome = mutation({
   args: {
     id: v.id("requests"),
@@ -1585,6 +1737,9 @@ export const setOutcome = mutation({
         outcome === "perdue" ? (lostReasonDetails ?? undefined) : undefined,
       updatedAt: Date.now(),
     });
+    if (outcome === "gagnee" && request.outcome !== "gagnee") {
+      await scheduleReviewInvite(ctx, request);
+    }
     if (request.type === "article") {
       const articleStatus =
         outcome === "gagnee"
@@ -1594,8 +1749,38 @@ export const setOutcome = mutation({
             : "reserve";
       for (const articleId of requestArticleIds(request)) {
         await ctx.db.patch(articleId, { status: articleStatus });
+        await scheduleStripeSync(ctx, articleId);
       }
     }
+  },
+});
+
+
+/**
+ * Vente encaissée au terminal, en boutique : les deux étapes du parcours
+ * boutique sont franchies d'un coup.
+ *
+ * Le paiement est fait ET l'article part avec le client — il n'y a pas de
+ * retrait à attendre, contrairement à une commande payée en ligne. La demande
+ * est donc close et gagnée dans la foulée.
+ */
+export const completeTerminalSale = internalMutation({
+  args: { requestId: v.id("requests"), by: v.optional(v.string()) },
+  handler: async (ctx, { requestId, by }) => {
+    const request = await ctx.db.get(requestId);
+    if (!request) throw new Error("Demande introuvable.");
+    const steps = request.processSteps ?? [];
+    const now = Date.now();
+    await ctx.db.patch(requestId, {
+      completedSteps: steps.length,
+      outcome: "gagnee",
+      processLog: steps.map((_, index) => ({
+        step: index,
+        by: by?.trim() || "Caisse (terminal)",
+        at: now,
+      })),
+      updatedAt: now,
+    });
   },
 });
 
@@ -1679,6 +1864,7 @@ export const deleteForever = mutation({
         const article = await ctx.db.get(articleId);
         if (article?.status === "reserve") {
           await ctx.db.patch(articleId, { status: "disponible" });
+          await scheduleStripeSync(ctx, articleId);
           articleReservationsReleased++;
         }
       }
@@ -1812,6 +1998,7 @@ export const patchManagement = mutation({
     id: v.id("requests"),
     site: v.optional(v.union(v.literal("60"), v.literal("76"))),
     assignedTo: v.optional(v.union(v.id("teamMembers"), v.null())),
+    assignedWorkerId: v.optional(v.union(v.id("polyvalentWorkers"), v.null())),
     estimatedHours: v.optional(v.union(v.number(), v.null())),
     actualHours: v.optional(v.union(v.number(), v.null())),
     quoteAmount: v.optional(v.union(v.number(), v.null())),
@@ -1840,6 +2027,9 @@ export const patchManagement = mutation({
         request.assignedTo,
         args.assignedTo ?? undefined,
       );
+    }
+    if (args.assignedWorkerId !== undefined) {
+      setPatchIfChanged(patch, changed, "assignedWorkerId", request.assignedWorkerId, args.assignedWorkerId ?? undefined);
     }
     if (args.assignedVehicle !== undefined) {
       if (args.assignedVehicle) {
@@ -2030,9 +2220,13 @@ export const advanceProcess = mutation({
       outcome: done ? "gagnee" : "open",
       updatedAt: Date.now(),
     });
+    if (done && r.outcome !== "gagnee") {
+      await scheduleReviewInvite(ctx, r);
+    }
     if (done && r.type === "article") {
       for (const articleId of requestArticleIds(r)) {
         await ctx.db.patch(articleId, { status: "vendu" });
+        await scheduleStripeSync(ctx, articleId);
       }
     }
     // La facture vient d'être éditée et « Facture réglée » est l'étape
@@ -2071,6 +2265,7 @@ export const retreatProcess = mutation({
     if (r.outcome === "gagnee" && r.type === "article") {
       for (const articleId of requestArticleIds(r)) {
         await ctx.db.patch(articleId, { status: "reserve" });
+        await scheduleStripeSync(ctx, articleId);
       }
     }
   },
@@ -2394,6 +2589,7 @@ export const createInternal = mutation({
       if (!article) throw new Error("Article introuvable.");
       if (article.status !== "disponible") throw new Error("Cet article n'est plus disponible.");
       await ctx.db.patch(articleId, { status: "reserve" });
+      await scheduleStripeSync(ctx, articleId);
       const id = await ctx.db.insert("requests", {
         type: "article",
         stage: "nouveau",
@@ -2546,4 +2742,3 @@ export const sendPendingInvoicesDigest = internalAction({
     return { count: requests.length };
   },
 });
-

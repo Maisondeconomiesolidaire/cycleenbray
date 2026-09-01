@@ -1,5 +1,6 @@
 import { httpRouter } from "convex/server";
 import { env, httpAction } from "./_generated/server";
+import type { ActionCtx } from "./_generated/server";
 import { internal } from "./_generated/api";
 import { Id } from "./_generated/dataModel";
 
@@ -91,6 +92,91 @@ async function verifyStripeSignature(
   return timingSafeEqual(toHex(signature), parts.v1);
 }
 
+/**
+ * Événements du CATALOGUE Stripe, redescendus dans le stock Recycapp.
+ *
+ * Le sens principal reste Recycapp → Stripe ; ces événements ferment la boucle
+ * pour ce qui est fait depuis le dashboard Stripe ou un canal de vente Stripe.
+ * Nos propres écritures en produisent aussi : les mutations appelées ici sont
+ * donc sans effet quand l'état décrit est déjà atteint, ce qui coupe court aux
+ * allers-retours.
+ */
+const CATALOG_EVENTS = new Set([
+  "product.deleted",
+  "product.updated",
+  "price.created",
+  "price.updated",
+  "checkout.session.completed",
+]);
+
+async function handleCatalogEvent(
+  ctx: { runMutation: ActionCtx["runMutation"]; scheduler: ActionCtx["scheduler"] },
+  type: string,
+  object: {
+    id?: string;
+    active?: boolean;
+    product?: string;
+    unit_amount?: number;
+    currency?: string;
+    metadata?: { draftId?: string };
+  },
+) {
+  if (type === "product.deleted") {
+    if (object.id) {
+      await ctx.runMutation(internal.stripeCatalog.applyProductDeleted, {
+        stripeProductId: object.id,
+      });
+    }
+    return;
+  }
+
+  if (type === "product.updated") {
+    if (object.id && typeof object.active === "boolean") {
+      await ctx.runMutation(internal.stripeCatalog.applyProductActive, {
+        stripeProductId: object.id,
+        active: object.active,
+      });
+    }
+    return;
+  }
+
+  if (type === "price.created" || type === "price.updated") {
+    // Un price archivé ne dit rien du prix en vigueur : seul un price actif en
+    // euros, rattaché à un de nos produits, fait foi.
+    if (
+      object.product &&
+      object.id &&
+      object.active !== false &&
+      object.currency === "eur" &&
+      typeof object.unit_amount === "number"
+    ) {
+      await ctx.runMutation(internal.stripeCatalog.applyPriceChange, {
+        stripeProductId: object.product,
+        stripePriceId: object.id,
+        unitAmount: object.unit_amount,
+      });
+    }
+    return;
+  }
+
+  if (type === "checkout.session.completed" && object.id) {
+    // Une session portant un `draftId` est une commande de la boutique ou de
+    // la vitrine : elle a son propre circuit, qui marque les articles vendus
+    // ET enregistre la commande. Les marquer vendus ici les rendrait
+    // indisponibles avant que la commande existe, et la finalisation
+    // échouerait sur un article « déjà vendu ».
+    if (object.metadata?.draftId) return;
+
+    // Les lignes de la session ne sont pas dans le webhook : il faut les
+    // redemander à Stripe, donc passer par une action.
+    await ctx.scheduler.runAfter(
+      0,
+      internal.stripeCatalog.applySoldCheckoutSession,
+      { sessionId: object.id },
+    );
+  }
+}
+
 http.route({
   path: "/stripe/recycapp",
   method: "POST",
@@ -116,11 +202,23 @@ http.route({
         object?: {
           id?: string;
           status?: string;
+          object?: string;
+          active?: boolean;
+          product?: string;
+          unit_amount?: number;
+          currency?: string;
+          default_price?: string | { id?: string };
           metadata?: { draftId?: string; paymentLinkToken?: string };
         };
       };
     };
     const intent = event.data?.object;
+
+    // Catalogue : ce qui est fait côté Stripe redescend dans le stock.
+    if (event.type && CATALOG_EVENTS.has(event.type)) {
+      await handleCatalogEvent(ctx, event.type, event.data?.object ?? {});
+      return new Response("ok", { status: 200 });
+    }
 
     if (event.type !== "payment_intent.succeeded") {
       // Les autres événements sont acquittés sans traitement.
@@ -159,6 +257,43 @@ http.route({
       );
       return new Response(message, { status: 500 });
     }
+  }),
+});
+
+/* ─── OAuth Google — connexion de la boîte Gmail Vinted de Klyd ────────────
+ *
+ * Google renvoie l'utilisateur ici après le consentement. On échange le `code`
+ * contre un refresh token côté serveur (le secret client ne quitte jamais
+ * Convex), puis on renvoie l'utilisateur dans Klyd.
+ *
+ * URI de redirection à déclarer dans Google Cloud Console :
+ *   https://hip-marten-394.eu-west-1.convex.site/klyde/gmail/oauth/callback
+ */
+http.route({
+  path: "/klyde/gmail/oauth/callback",
+  method: "GET",
+  handler: httpAction(async (ctx, request) => {
+    const url = new URL(request.url);
+    const code = url.searchParams.get("code");
+    const state = url.searchParams.get("state");
+    const error = url.searchParams.get("error");
+    const fallback = (process.env.KLYDE_APP_URL ?? "https://klyd.groupemes.fr").replace(/\/$/, "");
+
+    if (error) {
+      return Response.redirect(
+        `${fallback}/?gmail=error&message=${encodeURIComponent(error)}`,
+        302,
+      );
+    }
+    if (!code || !state) {
+      return Response.redirect(
+        `${fallback}/?gmail=error&message=${encodeURIComponent("Réponse Google incomplète.")}`,
+        302,
+      );
+    }
+
+    const redirect = await ctx.runAction(internal.klydeGmail.completeOAuth, { code, state });
+    return Response.redirect(redirect, 302);
   }),
 });
 

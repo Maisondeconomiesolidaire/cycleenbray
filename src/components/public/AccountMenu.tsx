@@ -7,17 +7,6 @@ import { api } from "../../../convex/_generated/api";
 
 const BRAND = "#f1104f";
 
-/** Crée/rafraîchit le profil Convex à la connexion et rattache les demandes. */
-function ProfileSync() {
-  const syncProfile = useMutation(api.users.syncProfile);
-  useEffect(() => {
-    void syncProfile({
-      source: { app: "cycleenbray", path: window.location.pathname + window.location.search },
-    });
-  }, [syncProfile]);
-  return null;
-}
-
 export function AccountMenu() {
   const navigate = useNavigate();
   const { signOut } = useClerk();
@@ -56,7 +45,6 @@ export function AccountMenu() {
       </SignedOut>
 
       <SignedIn>
-        <ProfileSync />
         <div ref={ref} className="relative shrink-0">
           <button
             type="button"

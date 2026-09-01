@@ -204,6 +204,62 @@ export const requestOrigin = v.union(
   v.literal("external"),
 );
 
+
+/* ─── Bâtire : matériaux du bâtiment ─────────────────────────────────────── */
+
+/**
+ * Unité de vente d'un matériau. Elle gouverne le prix, le stock et le devis :
+ * du sable se vend à la tonne, un isolant au m², une poutre au mètre linéaire.
+ */
+export const btUnit = v.union(
+  v.literal("unité"),
+  v.literal("m²"),
+  v.literal("m³"),
+  v.literal("ml"),
+  v.literal("kg"),
+  v.literal("tonne"),
+  v.literal("palette"),
+  v.literal("sac"),
+  v.literal("lot"),
+);
+
+export const btCondition = v.union(
+  v.literal("Neuf"),
+  v.literal("Très bon"),
+  v.literal("Bon"),
+  v.literal("Usagé"),
+  /** @deprecated Référentiel d'états d'avant la simplification en quatre
+   *  valeurs. Conservé pour les fiches créées avant le changement : retirer
+   *  ces valeurs les rendrait invalides. */
+  v.literal("Déstockage"),
+  v.literal("Reconditionné"),
+  v.literal("Très bon état"),
+  v.literal("Bon état"),
+  v.literal("À reconditionner"),
+  v.literal("À rénover"),
+);
+
+export const btMaterialStatus = v.union(
+  v.literal("brouillon"),
+  v.literal("disponible"),
+  v.literal("reserve"),
+  v.literal("vendu"),
+);
+
+export const btRequestType = v.union(
+  v.literal("devis"),
+  v.literal("reservation"),
+  v.literal("reprise"),
+  v.literal("question"),
+);
+
+export const btRequestOutcome = v.union(
+  v.literal("nouveau"),
+  v.literal("en_cours"),
+  v.literal("gagnee"),
+  v.literal("perdue"),
+);
+
 export const hrEmployeeGender = v.union(v.literal("Monsieur"), v.literal("Madame"));
 
 export const hrEmployeeStructure = v.union(
@@ -347,6 +403,11 @@ const requestPayment = v.object({
   refundedAmount: v.optional(v.number()),
   refundedAt: v.optional(v.number()),
   refundedBy: v.optional(v.string()),
+  /** Bon de réduction utilisé au paiement (code, remise, montant déduit). */
+  discountCode: v.optional(v.string()),
+  discountPercent: v.optional(v.number()),
+  discountAmount: v.optional(v.number()),
+  subtotal: v.optional(v.number()),
 });
 
 const veloDetails = v.object({
@@ -438,13 +499,28 @@ export default defineSchema(
     bundleReason: v.optional(v.string()),
     // Article mis en avant "Produit du jour" (un seul à la fois).
     productOfDay: v.optional(v.boolean()),
+    /**
+     * Miroir de l'article dans le catalogue Stripe.
+     *
+     * Recycapp est la source de vérité : la synchronisation ne va que dans ce
+     * sens. Le montant et l'état déjà poussés sont mémorisés pour que la
+     * réconciliation nocturne n'appelle Stripe que lorsque quelque chose a
+     * réellement changé.
+     */
+    stripeProductId: v.optional(v.string()),
+    stripePriceId: v.optional(v.string()),
+    /** Montant du prix Stripe en vigueur, en centimes. */
+    stripePriceAmount: v.optional(v.number()),
+    stripeActive: v.optional(v.boolean()),
+    stripeSyncedAt: v.optional(v.number()),
     createdAt: v.number(),
   })
     .index("by_status", ["status"])
     .index("by_internalReference", ["internalReference"])
     .index("by_productOfDay", ["productOfDay"])
     .index("by_caisse", ["caisseId"])
-    .index("by_site", ["site"]),
+    .index("by_site", ["site"])
+    .index("by_stripeProduct", ["stripeProductId"]),
 
   /**
    * Pool de QR codes d'articles imprimés À L'AVANCE.
@@ -531,6 +607,8 @@ export default defineSchema(
     // --- Gestion interne (onglet Gestion du CRM) ---
     site: v.optional(v.union(v.literal("60"), v.literal("76"))),
     assignedTo: v.optional(v.id("teamMembers")),
+    /** Équipe opérationnelle Recyclerie (remplace progressivement assignedTo). */
+    assignedWorkerId: v.optional(v.id("polyvalentWorkers")),
     estimatedHours: v.optional(v.number()),
     actualHours: v.optional(v.number()),
     quoteAmount: v.optional(v.number()),
@@ -558,6 +636,8 @@ export default defineSchema(
     createdAt: v.number(),
     updatedAt: v.number(),
     reference: v.optional(v.string()),
+    /** Envoi de l'invitation à noter la Recyclerie sur Google (une seule fois). */
+    reviewInviteSentAt: v.optional(v.number()),
     visitNeeded: v.optional(v.boolean()),
     legacyImport: v.optional(
       v.object({
@@ -577,6 +657,7 @@ export default defineSchema(
     .index("by_userId", ["userId"])
     .index("by_scheduledDate", ["scheduledDate"])
     .index("by_assignedVehicle", ["assignedVehicle"])
+    .index("by_assignedWorkerId", ["assignedWorkerId"])
     .index("by_reference", ["reference"]),
 
   /**
@@ -683,6 +764,20 @@ export default defineSchema(
     // formulaire d'origine (/collecte, /boutique/panier…). Fixé à la création.
     signupApp: v.optional(v.string()),
     signupPath: v.optional(v.string()),
+    /**
+     * Origine détaillée, capturée AVANT la redirection vers Clerk : `signupPath`
+     * seul est relevé au retour de connexion, souvent sur l'accueil, ce qui
+     * perdait l'écran réellement à l'origine de l'inscription.
+     */
+    // Dernier écran vu en étant déconnecté : le formulaire ou la fiche d'où
+    // part l'inscription.
+    signupEntryPath: v.optional(v.string()),
+    // Première page de la visite : la porte d'entrée sur le site.
+    signupLandingPath: v.optional(v.string()),
+    // Site qui a amené la visite (hors navigation interne).
+    signupReferrer: v.optional(v.string()),
+    // Paramètres de campagne (utm_*) présents à l'arrivée, tels quels.
+    signupUtm: v.optional(v.string()),
     createdAt: v.number(),
     updatedAt: v.number(),
   })
@@ -790,6 +885,9 @@ export default defineSchema(
     role: v.optional(v.string()),
     email: v.optional(v.string()),
     site: v.optional(v.union(v.literal("60"), v.literal("76"))),
+    /** Sites de rattachement : un salarié peut intervenir sur les deux. */
+    sites: v.optional(v.array(v.union(v.literal("60"), v.literal("76")))),
+    employmentType: v.optional(v.union(v.literal("permanent"), v.literal("polyvalent"))),
     active: v.boolean(),
     createdAt: v.number(),
   }),
@@ -999,6 +1097,16 @@ export default defineSchema(
     discountAmount: v.optional(v.number()),
     total: v.number(),
     createdBy: v.string(),
+    /** Client de la vente : la demande boutique est créée à l'encaissement. */
+    customer: v.optional(
+      v.object({
+        firstName: v.string(),
+        lastName: v.string(),
+        email: v.string(),
+        phone: v.optional(v.string()),
+      }),
+    ),
+    requestId: v.optional(v.id("requests")),
     stripeSessionId: v.optional(v.string()),
     stripePaymentIntentId: v.optional(v.string()),
     status: v.union(v.literal("pending"), v.literal("completed")),
@@ -1037,11 +1145,46 @@ export default defineSchema(
     .index("by_token", ["token"])
     .index("by_request", ["requestId"]),
 
+  /**
+   * Bons de réduction de la boutique en ligne.
+   *
+   * Un bon est généré depuis le CRM, imprimé ou dicté au client, et vaut un
+   * pourcentage sur la totalité d'un panier. Le code est long et tiré au sort
+   * (« RECY » + 16 chiffres) : il ne se devine pas, et un bon consommé ne peut
+   * plus resservir — `status` bascule sur « used » au moment de l'encaissement.
+   */
+  discountCodes: defineTable({
+    code: v.string(),
+    /** Remise en pourcentage du panier, de 5 à 80. */
+    percent: v.number(),
+    status: v.union(
+      v.literal("active"),
+      v.literal("used"),
+      v.literal("cancelled"),
+    ),
+    label: v.optional(v.string()),
+    createdAt: v.number(),
+    createdBy: v.optional(v.string()),
+    usedAt: v.optional(v.number()),
+    usedByRequestId: v.optional(v.id("requests")),
+    /** Montant réellement remisé, en euros, au moment de l'encaissement. */
+    discountAmount: v.optional(v.number()),
+    cancelledAt: v.optional(v.number()),
+  })
+    .index("by_code", ["code"])
+    .index("by_status", ["status"]),
+
   publicStripeCheckoutDrafts: defineTable({
     articleIds: v.array(v.id("articles")),
     customer: customer,
     comment: v.optional(v.string()),
+    /** Montant réellement dû, remise déduite. */
     total: v.number(),
+    /** Bon de réduction appliqué au panier, s'il y en a un. */
+    discountCodeId: v.optional(v.id("discountCodes")),
+    discountPercent: v.optional(v.number()),
+    discountAmount: v.optional(v.number()),
+    subtotal: v.optional(v.number()),
     stripeSessionId: v.optional(v.string()),
     stripePaymentIntentId: v.optional(v.string()),
     status: v.union(v.literal("pending"), v.literal("completed")),
@@ -1092,6 +1235,8 @@ export default defineSchema(
     // Véhicule de la flotte affecté à la tournée.
     fleetVehicleId: v.optional(v.id("vehicles")),
     driverId: v.optional(v.id("teamMembers")),
+    /** Chauffeur issu de l'équipe opérationnelle (remplace `driverId`). */
+    driverWorkerId: v.optional(v.id("polyvalentWorkers")),
     stops: v.array(v.object({
       requestId: v.optional(v.id("requests")),
       address: v.string(),
@@ -1376,6 +1521,18 @@ export default defineSchema(
     partsCost: v.optional(v.number()),
     /** Pièces jointes : photos de la panne, de la réparation, factures… */
     attachments: v.optional(v.array(v.id("_storage"))),
+    /** Nom et type des pièces jointes, dans l'ordre d'`attachments`. Sans eux,
+     *  un PDF ne se distingue pas d'une photo et finit dans une balise `img` ;
+     *  les fiches d'avant les documents n'en ont pas, elles sont des photos. */
+    attachmentMeta: v.optional(
+      v.array(
+        v.object({
+          storageId: v.id("_storage"),
+          name: v.optional(v.string()),
+          contentType: v.optional(v.string()),
+        }),
+      ),
+    ),
     /** Photos de l'état AVANT intervention (constat, panne). */
     beforePhotos: v.optional(v.array(v.id("_storage"))),
     /** Descriptif AVANT intervention : constat, symptômes, état relevé. */
@@ -1692,6 +1849,12 @@ export default defineSchema(
     // Nombre de fois où l'annonce Vinted a été prolongée après l'alerte de 3 semaines.
     vintedExtensionCount: v.optional(v.number()),
     vintedLastExtendedAt: v.optional(v.number()),
+    /**
+     * Date d'encaissement, posée au passage en « gagné ». Les rapports de
+     * vente se groupent par mois : sans cette date, un article vendu ne peut
+     * être rattaché qu'à `updatedAt`, que la moindre retouche déplace.
+     */
+    soldAt: v.optional(v.number()),
     // Décision prise lorsqu'un article sort de Stock B.
     stockBDisposition: v.optional(v.union(
       v.literal("vente_exceptionnelle"),
@@ -1719,10 +1882,16 @@ export default defineSchema(
     aiNotes: v.optional(v.string()),
     trackingNotes: v.optional(v.string()),
     featured: v.optional(v.boolean()),
+    /**
+     * Mise aux archives : l'article sort du stock, de la boutique et des
+     * rapports, mais garde son statut pour pouvoir être remis en ligne.
+     */
+    archivedAt: v.optional(v.number()),
     createdAt: v.number(),
     updatedAt: v.number(),
   })
     .index("by_status", ["status"])
+    .index("by_archivedAt", ["archivedAt"])
     .index("by_createdAt", ["createdAt"])
     .index("by_sku", ["sku"])
     .index("by_boutiquePublished", ["publishedOnBoutique"])
@@ -1764,6 +1933,137 @@ export default defineSchema(
     .index("by_clerkId", ["clerkId"])
     .index("by_clerkId_itemId", ["clerkId", "itemId"])
     .index("by_itemId", ["itemId"]),
+
+  /* ─── Klyd — boîte Gmail Vinted (OAuth Google + emails analysés) ─────────
+   *
+   * Vinted n'expose pas d'API publique : la seule source fiable sur ce qui est
+   * vendu, expédié ou payé reste la boîte mail du compte. On lit donc, en
+   * lecture seule (scope `gmail.readonly`), les emails Vinted du compte Gmail
+   * connecté, et on en extrait les informations exploitables dans Klyd.
+   */
+
+  /** Compte Gmail connecté via OAuth Google (un par boîte, réutilisable). */
+  klydeGmailAccounts: defineTable({
+    /** Adresse Gmail réellement connectée (renvoyée par Google, pas saisie). */
+    email: v.string(),
+    /** Clerk de la personne qui a autorisé l'accès (traçabilité). */
+    connectedByClerkId: v.string(),
+    connectedByName: v.optional(v.string()),
+    /**
+     * Jeton de rafraîchissement Google : c'est LUI qui donne l'accès durable.
+     * Google ne le renvoie qu'au premier consentement (`prompt=consent` force
+     * son renvoi) — on ne l'écrase donc jamais par une valeur vide.
+     */
+    refreshToken: v.string(),
+    accessToken: v.optional(v.string()),
+    accessTokenExpiresAt: v.optional(v.number()),
+    /** Requête Gmail appliquée à la synchronisation (surchargeable). */
+    query: v.optional(v.string()),
+    active: v.boolean(),
+    /** Date (ms) du message le plus récent déjà importé : borne du sync incrémental. */
+    lastMessageDate: v.optional(v.number()),
+    lastSyncAt: v.optional(v.number()),
+    lastSyncError: v.optional(v.string()),
+    importedCount: v.optional(v.number()),
+    createdAt: v.number(),
+    updatedAt: v.number(),
+  })
+    .index("by_email", ["email"])
+    .index("by_active", ["active"]),
+
+  /**
+   * État anti-CSRF de la redirection OAuth. Créé avant l'envoi chez Google,
+   * consommé (et supprimé) au retour : un `code` sans état connu est rejeté.
+   */
+  klydeGmailOAuthStates: defineTable({
+    state: v.string(),
+    clerkId: v.string(),
+    clerkName: v.optional(v.string()),
+    returnUrl: v.string(),
+    createdAt: v.number(),
+  }).index("by_state", ["state"]),
+
+  /** Email Vinted importé et analysé (une ligne par message Gmail). */
+  klydeVintedEmails: defineTable({
+    accountId: v.id("klydeGmailAccounts"),
+    /** Identifiant Gmail du message : clé d'idempotence de l'import. */
+    gmailId: v.string(),
+    threadId: v.optional(v.string()),
+    /** Date d'envoi (ms), telle que donnée par Gmail (`internalDate`). */
+    sentAt: v.number(),
+    subject: v.string(),
+    from: v.string(),
+    snippet: v.optional(v.string()),
+    /** Corps en texte brut (HTML aplati si l'email n'a pas de partie texte). */
+    bodyText: v.optional(v.string()),
+    /** Nature du message, déduite du sujet et du corps. */
+    kind: v.union(
+      v.literal("vente"),
+      v.literal("bordereau"),
+      v.literal("expedition"),
+      v.literal("paiement"),
+      v.literal("offre"),
+      v.literal("message"),
+      v.literal("autre"),
+    ),
+    /** Informations extraites (regex, complétées si besoin par l'IA). */
+    itemTitle: v.optional(v.string()),
+    amount: v.optional(v.number()),
+    buyer: v.optional(v.string()),
+    orderRef: v.optional(v.string()),
+    trackingNumber: v.optional(v.string()),
+    carrier: v.optional(v.string()),
+    /** Lien « imprimer le bordereau » trouvé dans l'email. */
+    labelUrl: v.optional(v.string()),
+    /** Lien vers la conversation Vinted avec l'acheteur. */
+    conversationUrl: v.optional(v.string()),
+    /** Lien vers l'annonce Vinted concernée. */
+    itemUrl: v.optional(v.string()),
+    /** Enseigne d'où vient l'email, déduite de la boîte scrutée. */
+    outlet: v.optional(v.union(v.literal("klyd"), v.literal("mobifrip"))),
+    /** Coordonnées de l'acheteur, telles que Vinted les donne dans l'email. */
+    buyerName: v.optional(v.string()),
+    buyerAddress: v.optional(v.string()),
+    buyerEmail: v.optional(v.string()),
+    /** Facture générée pour cette vente (PDF dans le stockage Convex). */
+    invoiceStorageId: v.optional(v.id("_storage")),
+    invoiceNumber: v.optional(v.string()),
+    invoiceGeneratedAt: v.optional(v.number()),
+    /** Envoi de la facture au client (date et adresse réellement servie). */
+    invoiceSentAt: v.optional(v.number()),
+    invoiceSentTo: v.optional(v.string()),
+    /** Adresse qui a transféré la notification Vinted (le cas courant). */
+    forwardedBy: v.optional(v.string()),
+    /** Date de réception du transfert, quand elle diffère de la date d'origine. */
+    forwardedAt: v.optional(v.number()),
+    /** Pièces jointes rapatriées dans le stockage Convex (bordereaux PDF). */
+    attachments: v.optional(
+      v.array(
+        v.object({
+          storageId: v.id("_storage"),
+          filename: v.string(),
+          mimeType: v.string(),
+          size: v.optional(v.number()),
+        }),
+      ),
+    ),
+    /** `true` si l'extraction a été complétée par l'IA. */
+    aiParsed: v.optional(v.boolean()),
+    /** Article Klyd rattaché (rapprochement automatique ou manuel). */
+    matchedItemId: v.optional(v.id("klydeItems")),
+    matchConfidence: v.optional(v.number()),
+    /** Email traité par l'équipe (masqué de la file d'attente). */
+    handled: v.optional(v.boolean()),
+    handledAt: v.optional(v.number()),
+    handledByClerkId: v.optional(v.string()),
+    createdAt: v.number(),
+  })
+    .index("by_gmailId", ["gmailId"])
+    .index("by_sentAt", ["sentAt"])
+    .index("by_kind", ["kind"])
+    .index("by_handled", ["handled"])
+    .index("by_account", ["accountId"])
+    .index("by_matchedItem", ["matchedItemId"]),
 
   /* ─── App « Bennes & Pro » : dépôts de déchets par les entreprises ──────── */
 
@@ -1839,9 +2139,32 @@ export default defineSchema(
     key: v.string(),
     /** Prix du DIB en centimes d'euro par kg (défaut : 34). */
     dibPriceCentsPerKg: v.optional(v.number()),
+    /** Code PIN de l'onglet « Profils » (défaut : 0205). */
+    profilesPin: v.optional(v.string()),
     updatedAt: v.optional(v.number()),
     updatedBy: v.optional(v.string()),
   }).index("by_key", ["key"]),
+
+  /**
+   * Profils d'un compte Bennes & Pro partagé par plusieurs personnes.
+   *
+   * Le compte est unique mais l'équipe est multiple : à l'ouverture, chacun
+   * choisit son profil (à la Netflix), et c'est ce nom-là qui est inscrit sur
+   * les dépôts qu'il enregistre. Sans ça, tous les dépôts porteraient la même
+   * adresse email et on ne saurait jamais qui était sur le terrain.
+   */
+  bpProfiles: defineTable({
+    /** Compte partagé auquel appartient le profil (email Clerk, en minuscules). */
+    ownerEmail: v.string(),
+    name: v.string(),
+    /** Rôle ou mention libre affichée sous le nom (« Chauffeur », « Quai »…). */
+    role: v.optional(v.string()),
+    /** Teinte de la vignette, pour distinguer les profils d'un coup d'œil. */
+    color: v.optional(v.string()),
+    archived: v.optional(v.boolean()),
+    createdAt: v.number(),
+    updatedAt: v.number(),
+  }).index("by_owner", ["ownerEmail"]),
 
   /** Véhicules appartenant à une entreprise (bennes, camions...). */
   bpVehicles: defineTable({
@@ -1875,10 +2198,18 @@ export default defineSchema(
     /** Facturation Stripe des matières payantes, au poids. */
     billing: v.optional(bpBilling),
     createdBy: v.optional(v.string()),
+    /**
+     * Profil de la personne qui a saisi le dépôt derrière un compte partagé.
+     * Le nom est recopié : un profil renommé ou supprimé plus tard ne doit pas
+     * effacer la trace de qui a fait le dépôt ce jour-là.
+     */
+    createdByProfileId: v.optional(v.id("bpProfiles")),
+    createdByProfile: v.optional(v.string()),
     createdAt: v.number(),
   })
     .index("by_company", ["companyId"])
-    .index("by_number", ["depotNumber"]),
+    .index("by_number", ["depotNumber"])
+    .index("by_profile", ["createdByProfileId"]),
 
   // ───────────────────────── App « Pointeuse LSDB » ─────────────────────────
   // Suivi des salariés et des chantiers : clients, projets, pointages,
@@ -2196,9 +2527,14 @@ export default defineSchema(
   /* ─── Agents polyvalents (Recyclerie) ─────────────────────────────────────
    * Gestion des ouvriers polyvalents : un catalogue de tâches, une liste
    * d'ouvriers (nom/prénom), et des activités qui affectent un ouvrier à une
-   * tâche sur un créneau daté. Distinct de `teamMembers` (agents permanents). */
+   * tâche sur un créneau daté. `polyvalentWorkers` est désormais l'unique
+   * équipe Recyclerie (les anciens « agents permanents » y ont été fusionnés). */
   polyvalentTasks: defineTable({
     name: v.string(),
+    /** Site de traitement : une tâche appartient à une recyclerie. */
+    site: v.optional(v.union(v.literal("60"), v.literal("76"))),
+    /** Main d'œuvre requise par mois, en heures (base du plan de charge). */
+    requiredMonthlyHours: v.optional(v.number()),
     createdBy: v.string(),
     createdAt: v.number(),
   }).index("by_name", ["name"]),
@@ -2206,22 +2542,325 @@ export default defineSchema(
   polyvalentWorkers: defineTable({
     firstName: v.string(),
     lastName: v.string(),
+    email: v.optional(v.string()),
+    /** Recycleries de rattachement : un salarié peut intervenir sur les deux. */
+    sites: v.optional(v.array(v.union(v.literal("60"), v.literal("76")))),
+    /** Type de contrat : agent permanent ou agent polyvalent. */
+    employmentType: v.optional(v.union(v.literal("permanent"), v.literal("polyvalent"))),
+    /** Inactif = conservé pour l'historique mais plus attribuable. */
+    active: v.optional(v.boolean()),
+    /** Salarié RH correspondant : la fiche RH fait foi pour l'identité. */
+    hrEmployeeId: v.optional(v.id("hrEmployees")),
+    /** Fin du dernier contrat (`YYYY-MM-DD`) ; absente pour un CDI. */
+    contractEndAt: v.optional(v.string()),
+    /** Réactivation manuelle : la synchro RH ne redésactive plus ce salarié. */
+    reactivatedAt: v.optional(v.number()),
+    /**
+     * Statut forcé à la main dans l'app. Il l'emporte sur la fin de contrat,
+     * mais pas sur une sortie d'effectif RH.
+     */
+    activeOverride: v.optional(v.boolean()),
+    /** Durée mensuelle de travail du dernier contrat, en heures (source RH). */
+    monthlyHours: v.optional(v.number()),
     createdBy: v.string(),
     createdAt: v.number(),
-  }),
+  }).index("by_hrEmployee", ["hrEmployeeId"]),
+
+  polyvalentWorkerSchedules: defineTable({
+    workerId: v.id("polyvalentWorkers"),
+    availability: v.array(v.object({
+      weekday: v.number(),
+      start: v.string(),
+      end: v.string(),
+    })),
+  }).index("by_worker", ["workerId"]),
+
+  /** Règles hebdomadaires durables : elles restent actives jusqu'à annulation. */
+  polyvalentTaskRecurrences: defineTable({
+    taskId: v.id("polyvalentTasks"),
+    workerId: v.optional(v.id("polyvalentWorkers")),
+    slots: v.array(v.object({ weekday: v.number(), start: v.string(), end: v.string() })),
+    /** @deprecated La charge d'un créneau est la durée du créneau. */
+    plannedHours: v.optional(v.number()),
+    /** @deprecated La recyclerie vient désormais de la tâche. */
+    site: v.optional(v.union(v.literal("60"), v.literal("76"))),
+    createdBy: v.string(),
+    createdAt: v.number(),
+  })
+    .index("by_task", ["taskId"])
+    .index("by_worker", ["workerId"]),
 
   polyvalentActivities: defineTable({
     taskId: v.id("polyvalentTasks"),
-    workerId: v.id("polyvalentWorkers"),
+    /** Une tâche peut être planifiée avant qu'un salarié lui soit affecté. */
+    workerId: v.optional(v.id("polyvalentWorkers")),
     /** Début et fin du créneau, en millisecondes epoch (date + heure). */
     startAt: v.number(),
     endAt: v.number(),
+    /** @deprecated La charge d'un créneau est la durée du créneau. */
+    plannedHours: v.optional(v.number()),
+    /** @deprecated La recyclerie vient désormais de la tâche. */
+    site: v.optional(v.union(v.literal("60"), v.literal("76"))),
     createdBy: v.string(),
     createdAt: v.number(),
   })
     .index("by_worker", ["workerId"])
     .index("by_task", ["taskId"])
     .index("by_startAt", ["startAt"]),
+
+  // ───────────────────────────── App « Bâtire » ─────────────────────────────
+  // Matériaux de construction de seconde main : catalogue, boutique en ligne,
+  // vitrine kiosque et demandes clients. Tables préfixées `bt`, distinctes des
+  // `articles` de la Recyclerie — un matériau se vend au mètre cube ou à la
+  // tonne, se stocke sur palette et porte des caractéristiques techniques
+  // qu'un objet de brocante n'a pas.
+
+  btMaterials: defineTable({
+    title: v.string(),
+    description: v.string(),
+    /** Niveau 1 de l'arborescence. */
+    category: v.string(),
+    /** Niveau 2 : famille. */
+    family: v.optional(v.string()),
+    /** Niveau 3 : sous-famille. */
+    subcategory: v.optional(v.string()),
+    condition: btCondition,
+    /** Unité de vente : c'est elle qui donne son sens au prix et au stock. */
+    unit: btUnit,
+    /** Stock disponible, exprimé dans l'unité de vente. */
+    quantity: v.number(),
+    /** Prix pour UNE unité de vente (un m³, une tonne, une palette…). */
+    price: v.number(),
+    /** Conditionnement : « palette de 60 sacs », « botte de 10 ». */
+    packaging: v.optional(v.string()),
+    /** Dimensions en centimètres, quand elles ont un sens pour le matériau. */
+    lengthCm: v.optional(v.number()),
+    widthCm: v.optional(v.number()),
+    heightCm: v.optional(v.number()),
+    thicknessMm: v.optional(v.number()),
+    weightKg: v.optional(v.number()),
+    brand: v.optional(v.string()),
+    /** Référence fabricant ou modèle lu sur l'étiquette. */
+    modelReference: v.optional(v.string()),
+    /** Matière : bois, béton, acier, PVC, aluminium, plâtre, terre cuite… */
+    material: v.optional(v.string()),
+    color: v.optional(v.string()),
+    /** Normes et certifications visibles : CE, NF, A+, classe d'emploi… */
+    standards: v.optional(v.string()),
+    /** Caractéristiques techniques libres : lambda, résistance, section… */
+    technicalNotes: v.optional(v.string()),
+    /** Dépôt où le matériau est entreposé. */
+    depot: v.optional(v.string()),
+    /** Emplacement précis dans le dépôt : « allée B3 », « extérieur ». */
+    location: v.optional(v.string()),
+    photos: v.array(v.id("_storage")),
+    status: btMaterialStatus,
+    /** Publié dans la boutique en ligne (distinct du statut de stock). */
+    published: v.optional(v.boolean()),
+    publishedAt: v.optional(v.number()),
+    featured: v.optional(v.boolean()),
+    /** Référence du QR code collé sur le matériau. */
+    qrReference: v.optional(v.string()),
+
+    /* ── Fiche réemploi ───────────────────────────────────────────────────
+     *
+     * Champs du diagnostic PEMD attendus par les maîtres d'ouvrage et les
+     * plateformes de réemploi. Tous facultatifs : une fiche reste publiable
+     * sans eux, ils se complètent au fil du diagnostic.
+     */
+
+    /** Référence interne du matériau, propre au dépôt. */
+    reference: v.optional(v.string()),
+    /** Provenance : reconditionné, occasion réemploi, surplus de chantier… */
+    origin: v.optional(v.string()),
+    /** Types de structures d'où vient le matériau, ou qu'il vise. */
+    profiles: v.optional(v.array(v.string())),
+    /**
+     * Matières constitutives. `material` garde la version texte : elle est lue
+     * par la recherche, la boutique et l'import Excel existants.
+     */
+    materials: v.optional(v.array(v.string())),
+    diameterCm: v.optional(v.number()),
+    /**
+     * Unité dans laquelle sont exprimées longueur, largeur, hauteur et
+     * diamètre. Absente = centimètres, ce qu'ont toujours voulu dire les
+     * champs `…Cm` des fiches déjà saisies.
+     */
+    dimensionUnit: v.optional(v.string()),
+    /** Fenêtre de disponibilité du lot. */
+    availableFrom: v.optional(v.number()),
+    availableUntil: v.optional(v.number()),
+
+    /* Potentiels du diagnostic, notés de 1 à 5 étoiles. */
+    reusePotential: v.optional(v.number()),
+    repurposePotential: v.optional(v.number()),
+    recyclingPotential: v.optional(v.number()),
+    recoveryPotential: v.optional(v.number()),
+    disposalPotential: v.optional(v.number()),
+
+    /** Comment le matériau est assemblé, et donc démontable. */
+    assemblyMode: v.optional(v.string()),
+    transportTerms: v.optional(v.string()),
+    packagingTerms: v.optional(v.string()),
+    storageTerms: v.optional(v.string()),
+    accessTerms: v.optional(v.string()),
+    /** Amiante, plomb, HAP… ce qui conditionne la reprise. */
+    hazardousSubstances: v.optional(v.string()),
+    typology: v.optional(v.string()),
+    /** Code déchet européen à 6 chiffres. */
+    wasteCode: v.optional(v.string()),
+    /** Bilan carbone en kg CO₂ équivalent. */
+    carbonFootprintKg: v.optional(v.number()),
+    /** Coût de mise en décharge évité, en euros. */
+    landfillCost: v.optional(v.number()),
+    /** Fiche technique jointe (PDF ou document). */
+    datasheet: v.optional(v.id("_storage")),
+    datasheetName: v.optional(v.string()),
+    /** Commentaire d'équipe, jamais publié. */
+    internalNote: v.optional(v.string()),
+
+    aiConfidence: v.optional(v.number()),
+    aiNotes: v.optional(v.string()),
+    createdBy: v.optional(v.string()),
+    createdAt: v.number(),
+    updatedAt: v.number(),
+  })
+    .index("by_status", ["status"])
+    .index("by_published", ["published"])
+    .index("by_category", ["category"])
+    .index("by_qrReference", ["qrReference"])
+    .index("by_createdAt", ["createdAt"]),
+
+  /**
+   * Valeurs ajoutées par l'équipe aux listes fermées de Bâtire (matières, pour
+   * l'instant). Une table plutôt qu'un champ libre : une matière saisie par
+   * l'un doit être proposée à tous, sinon la liste diverge d'un poste à
+   * l'autre et le filtrage de la boutique ne veut plus rien dire.
+   */
+  btOptions: defineTable({
+    /** Liste visée : « material » aujourd'hui, d'autres si le besoin vient. */
+    kind: v.string(),
+    value: v.string(),
+    createdBy: v.optional(v.string()),
+    createdAt: v.number(),
+  }).index("by_kind", ["kind"]),
+
+  btRequests: defineTable({
+    reference: v.string(),
+    type: btRequestType,
+    customer: v.object({
+      firstName: v.string(),
+      lastName: v.string(),
+      email: v.string(),
+      phone: v.string(),
+      company: v.optional(v.string()),
+    }),
+    /** Matériaux visés. Vide pour une demande de reprise ou une question. */
+    items: v.array(
+      v.object({
+        materialId: v.optional(v.id("btMaterials")),
+        title: v.string(),
+        quantity: v.number(),
+        unit: btUnit,
+      }),
+    ),
+    message: v.optional(v.string()),
+    /** Photos jointes : indispensables pour une proposition de reprise. */
+    photos: v.optional(v.array(v.id("_storage"))),
+    outcome: btRequestOutcome,
+    /** Suivi interne, non visible du client. */
+    internalNotes: v.optional(v.string()),
+    depot: v.optional(v.string()),
+    /** Compte client Clerk rattaché, si la demande vient d'un utilisateur connu. */
+    userId: v.optional(v.string()),
+    createdAt: v.number(),
+    updatedAt: v.number(),
+  })
+    .index("by_outcome", ["outcome"])
+    .index("by_reference", ["reference"])
+    .index("by_createdAt", ["createdAt"]),
+
+  /** Ventes Bâtire : paiement en ligne (boutique) ou au terminal (kiosque). */
+  btOrders: defineTable({
+    reference: v.string(),
+    materialId: v.id("btMaterials"),
+    materialTitle: v.string(),
+    quantity: v.number(),
+    unit: btUnit,
+    /** Prix unitaire au moment de la vente : le catalogue peut changer après. */
+    unitPrice: v.number(),
+    /** Montant total en centimes, tel qu'encaissé par Stripe. */
+    amountCents: v.number(),
+    customer: v.object({
+      firstName: v.string(),
+      lastName: v.string(),
+      email: v.string(),
+      phone: v.optional(v.string()),
+      company: v.optional(v.string()),
+    }),
+    channel: v.union(v.literal("boutique"), v.literal("terminal")),
+    status: v.union(v.literal("en_attente"), v.literal("payee"), v.literal("annulee")),
+    stripeSessionId: v.optional(v.string()),
+    stripePaymentIntentId: v.optional(v.string()),
+    paidAt: v.optional(v.number()),
+    userId: v.optional(v.string()),
+    createdAt: v.number(),
+  })
+    .index("by_status", ["status"])
+    .index("by_reference", ["reference"])
+    .index("by_material", ["materialId"])
+    .index("by_stripeSession", ["stripeSessionId"]),
+
+  /**
+   * Messagerie Bâtire : un fil par client et par matériau.
+   *
+   * Négocier une reprise ou organiser un enlèvement se fait en quelques
+   * échanges ; les rattacher au matériau évite de chercher de quoi on parle.
+   */
+  btMessages: defineTable({
+    /** Fil = matériau + client. Un matériau retiré garde son historique. */
+    materialId: v.optional(v.id("btMaterials")),
+    materialTitle: v.string(),
+    /** Identifiant Clerk du client : c'est lui qui identifie le fil. */
+    clientId: v.string(),
+    clientName: v.string(),
+    clientEmail: v.string(),
+    body: v.string(),
+    /** Vrai si le message vient de l'équipe. */
+    fromStaff: v.boolean(),
+    authorName: v.string(),
+    readByStaff: v.optional(v.boolean()),
+    readByClient: v.optional(v.boolean()),
+    createdAt: v.number(),
+  })
+    .index("by_client", ["clientId"])
+    .index("by_material", ["materialId"])
+    .index("by_createdAt", ["createdAt"]),
+
+  /**
+   * Dernier encaissement tenté au terminal pour un article de la vitrine.
+   *
+   * L'écran du kiosque n'a aucun moyen de savoir ce qui se passe sur le
+   * lecteur, tenu par l'équipe : cette trace lui sert d'accusé de réception.
+   * Une ligne par article, réécrite à chaque tentative.
+   */
+  kioskTerminalPayments: defineTable({
+    articleId: v.id("articles"),
+    status: v.union(v.literal("en_cours"), v.literal("payee"), v.literal("refusee")),
+    /** Message d'échec de Stripe, affiché tel quel au client. */
+    message: v.optional(v.string()),
+    updatedAt: v.number(),
+  }).index("by_article", ["articleId"]),
+
+  /** QR codes imprimés à l'avance, collés sur les matériaux à leur arrivée. */
+  btQrCodes: defineTable({
+    reference: v.string(),
+    materialId: v.optional(v.id("btMaterials")),
+    createdBy: v.optional(v.string()),
+    createdAt: v.number(),
+  })
+    .index("by_reference", ["reference"])
+    .index("by_material", ["materialId"]),
   },
   { schemaValidation: false },
 );

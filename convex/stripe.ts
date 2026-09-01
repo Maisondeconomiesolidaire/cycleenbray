@@ -41,6 +41,15 @@ export const startTestCheckout = action({
     ),
     discountAmount: v.optional(v.number()),
     returnUrl: v.string(),
+    /** Client de la vente : la demande boutique est créée à l'encaissement. */
+    customer: v.optional(
+      v.object({
+        firstName: v.string(),
+        lastName: v.string(),
+        email: v.string(),
+        phone: v.optional(v.string()),
+      }),
+    ),
   },
   handler: async (ctx, args) => {
     const access = await ctx.runQuery(api.permissions.myAccess, {});
@@ -60,6 +69,7 @@ export const startTestCheckout = action({
         items: args.items,
         discountAmount: args.discountAmount,
         createdBy: access.email ?? "caisse",
+        customer: args.customer,
       },
     );
 
@@ -195,6 +205,7 @@ export const confirmTestCheckout = action({
       receiptNumber: string;
       total: number;
       change?: number;
+      requestId: Id<"requests"> | null;
     } = await ctx.runMutation(internal.ventes.finalizeStripeCheckoutDraft, {
       draftId: args.draftId,
       stripeSessionId: session.id,
@@ -382,7 +393,7 @@ export const confirmPublicCartCheckout = action({
  */
 
 /** Clé Stripe de la boutique Recycapp (distincte de la caisse et de Bennes Pro). */
-function recycappSecretKey(): string {
+export function recycappSecretKey(): string {
   const key = env.RECYCAPP_STRIPE_SECRET_KEY;
   if (!key) {
     throw new Error(
@@ -392,7 +403,7 @@ function recycappSecretKey(): string {
   return key;
 }
 
-async function stripeRequest<T>(
+export async function stripeRequest<T>(
   path: string,
   secretKey: string,
   body?: Record<string, string>,
@@ -430,6 +441,8 @@ export const createPublicCartPaymentIntent = action({
       city: v.optional(v.string()),
     }),
     comment: v.optional(v.string()),
+    /** Bon de réduction saisi au panier. La remise est appliquée côté serveur. */
+    discountCode: v.optional(v.string()),
   },
   handler: async (
     ctx,
@@ -439,15 +452,24 @@ export const createPublicCartPaymentIntent = action({
     clientSecret: string;
     paymentIntentId: string;
     total: number;
+    subtotal: number;
+    discountPercent?: number;
+    discountAmount?: number;
   }> => {
     const secretKey = recycappSecretKey();
 
-    const draft: { draftId: Id<"publicStripeCheckoutDrafts">; total: number } =
-      await ctx.runMutation(internal.requests.createPublicStripeCheckoutDraft, {
-        articleIds: args.articleIds,
-        customer: args.customer,
-        comment: args.comment,
-      });
+    const draft: {
+      draftId: Id<"publicStripeCheckoutDrafts">;
+      total: number;
+      subtotal: number;
+      discountPercent?: number;
+      discountAmount?: number;
+    } = await ctx.runMutation(internal.requests.createPublicStripeCheckoutDraft, {
+      articleIds: args.articleIds,
+      customer: args.customer,
+      comment: args.comment,
+      discountCode: args.discountCode,
+    });
 
     if (draft.total <= 0) {
       throw new ConvexError("Le montant du panier doit être supérieur à 0 €.");
@@ -486,6 +508,9 @@ export const createPublicCartPaymentIntent = action({
       clientSecret: intent.client_secret,
       paymentIntentId: intent.id,
       total: draft.total,
+      subtotal: draft.subtotal,
+      discountPercent: draft.discountPercent,
+      discountAmount: draft.discountAmount,
     };
   },
 });
