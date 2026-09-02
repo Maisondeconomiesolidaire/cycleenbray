@@ -21,6 +21,7 @@ import { formatPrice } from "../../lib/format";
 import { useCart } from "../../lib/useCart";
 import { AccountMenu } from "./AccountMenu";
 import { PageSwitcher, PAGE_HEADERS } from "./PageSwitcher";
+import { PortalButton } from "../PortalButton";
 
 const PUBLIC_CONTAINER = "mx-auto w-full max-w-[92rem] px-5 sm:px-7 lg:px-8";
 const BRAND = "#f1104f";
@@ -204,6 +205,7 @@ function Header() {
               <img src="/recyclerie-logo.png" alt="Recyclerie" className="h-12 w-auto object-contain" />
             </Link>
             <div className="flex items-center gap-2">
+              <PortalButton className="h-11 rounded-full border border-white/55 bg-white/85 px-3 text-sm text-zinc-900 shadow-[0_12px_30px_rgba(24,24,27,0.08)] backdrop-blur hover:bg-white" />
               <PageSwitcher />
               <AccountMenu />
               {isBoutiqueArea ? (
