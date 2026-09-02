@@ -46,6 +46,7 @@ import { useUpload } from "./lib/useUpload";
 import { UpdateAvailableBanner } from "./components/UpdateAvailableBanner";
 import { ProfileSync } from "./components/ProfileSync";
 import { ConfirmRoot } from "./lib/confirm";
+import { PortalButton } from "./components/PortalButton";
 
 type BikeStatus = "inactive" | "available" | "purchase_pending" | "sold";
 type PipelineStatus = "nouveau" | "validation" | "en_cours" | "gagnee" | "perdue";
@@ -314,11 +315,14 @@ function PublicLayout() {
           <Link to="/boutique" aria-label="Cycle en Bray">
             <LogoMark className="h-16 w-48 sm:w-56" />
           </Link>
-          <nav className="flex items-center gap-1 rounded-full border border-black/8 bg-white/75 p-1 shadow-sm">
-            <PublicTab to="/boutique" icon={<ShoppingBag className="h-4 w-4" />}>Boutique</PublicTab>
-            <PublicTab to="/reebike" icon={<Bike className="h-4 w-4" />}>Reebike</PublicTab>
-            <PublicTab to="/reparation" icon={<ShieldCheck className="h-4 w-4" />}>Réparation</PublicTab>
-          </nav>
+          <div className="flex items-center gap-2 sm:gap-3">
+            <nav className="flex items-center gap-1 rounded-full border border-black/8 bg-white/75 p-1 shadow-sm">
+              <PublicTab to="/boutique" icon={<ShoppingBag className="h-4 w-4" />}>Boutique</PublicTab>
+              <PublicTab to="/reebike" icon={<Bike className="h-4 w-4" />}>Reebike</PublicTab>
+              <PublicTab to="/reparation" icon={<ShieldCheck className="h-4 w-4" />}>Réparation</PublicTab>
+            </nav>
+            <PortalButton className="h-10 rounded-full border border-black/8 bg-white px-3 text-xs text-zinc-700 shadow-sm hover:-translate-y-0.5 hover:text-brand-600 sm:px-4 sm:text-sm" />
+          </div>
         </div>
       </header>
       <Outlet />
