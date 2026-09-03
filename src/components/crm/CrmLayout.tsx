@@ -440,18 +440,6 @@ function isPathActive(pathname: string, item: NavItem) {
 
 function SignInScreen() {
   return (
-    <div className="min-h-screen bg-[var(--crm-bg)] flex flex-col items-center justify-center p-4 gap-8 dark">
-      <div className="text-center text-zinc-100">
-        <img
-          src="/recyclerie-logo.png"
-          alt="Recyclerie"
-          className="mx-auto h-14 w-auto object-contain"
-        />
-        <p className="text-sm text-zinc-500 leading-tight">
-          Espace professionnel
-        </p>
-      </div>
-      <AuthPanel />
-    </div>
+<AuthPanel />
   );
 }

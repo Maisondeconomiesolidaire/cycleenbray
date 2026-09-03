@@ -1034,14 +1034,7 @@ function CrmLayout() {
   return (
     <div className="crm-light min-h-screen bg-white text-zinc-950">
       <SignedOut>
-        <div className="grid min-h-screen place-items-center px-4">
-          <div className="w-full max-w-md rounded-lg border border-white/10 bg-[var(--crm-surface)] p-8 text-center">
-            <LogoMark className="mx-auto h-16 w-52" />
-            <h1 className="mt-5 text-2xl font-semibold">CRM</h1>
-            <p className="mt-2 text-sm text-zinc-600">Connexion Clerk requise.</p>
-            <div className="mt-6"><AuthPanel /></div>
-          </div>
-        </div>
+        <AuthPanel />
       </SignedOut>
       <SignedIn>
         <div className="flex min-h-screen">
