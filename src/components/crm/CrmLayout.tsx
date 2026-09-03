@@ -1,12 +1,11 @@
 import { createContext, useContext, useEffect, useMemo, useRef, useState } from "react";
-import { Link, NavLink, Outlet, useLocation } from "react-router-dom";
+import { Link, NavLink, Navigate, Outlet, useLocation } from "react-router-dom";
 import { useQuery } from "convex/react";
 import {
   SignedIn,
   SignedOut,
   useUser,
 } from "@clerk/clerk-react";
-import { AuthPanel } from "../AuthPanel";
 import { AppSwitcher } from "../AppSwitcher";
 import {
   ChevronDown,
@@ -438,8 +437,9 @@ function isPathActive(pathname: string, item: NavItem) {
   return pathname === item.to || pathname.startsWith(`${item.to}/`);
 }
 
+/** Le portail est servi par la page dédiée `/connexion`, qui ramène ici. */
 function SignInScreen() {
-  return (
-<AuthPanel />
-  );
+  const location = useLocation();
+  const redirectUrl = `${location.pathname}${location.search}`;
+  return <Navigate to={`/connexion?redirect_url=${encodeURIComponent(redirectUrl)}`} replace />;
 }

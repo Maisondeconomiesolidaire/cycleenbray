@@ -9,7 +9,7 @@ import {
   useState,
 } from "react";
 import { SignedIn, SignedOut, useClerk, useUser } from "@clerk/clerk-react";
-import { AuthPanel } from "./components/AuthPanel";
+import { AuthPage } from "./pages/public/AuthPage";
 import { AppSwitcher } from "./components/AppSwitcher";
 import { HelpButton } from "./components/HelpButton";
 import { useMutation, useQuery } from "convex/react";
@@ -37,7 +37,7 @@ import {
   Trash2,
   XCircle,
 } from "lucide-react";
-import { Link, NavLink, Navigate, Outlet, Route, Routes, useParams, useSearchParams } from "react-router-dom";
+import { Link, NavLink, Navigate, Outlet, Route, Routes, useLocation, useParams, useSearchParams } from "react-router-dom";
 import { api } from "../convex/_generated/api";
 import type { Doc, Id } from "../convex/_generated/dataModel";
 import { Drawer } from "./components/ui/Drawer";
@@ -279,6 +279,11 @@ export default function App() {
     <ProfileSync app="cycleenbray" />
     <UpdateAvailableBanner appName="Cycle en Bray" />
     <Routes>
+      {/* Page dédiée de connexion : hors du shell boutique, comme sur Mes
+          Outils et BâtiRe — le portail occupe tout l'écran. */}
+      <Route path="/connexion" element={<AuthPage />} />
+      <Route path="/inscription" element={<AuthPage initialMode="signup" />} />
+
       <Route element={<PublicLayout />}>
         <Route path="/" element={<Shop />} />
         <Route path="/boutique" element={<Shop />} />
@@ -1034,7 +1039,7 @@ function CrmLayout() {
   return (
     <div className="crm-light min-h-screen bg-white text-zinc-950">
       <SignedOut>
-        <AuthPanel />
+        <CrmSignInRedirect />
       </SignedOut>
       <SignedIn>
         <div className="flex min-h-screen">
@@ -2346,4 +2351,11 @@ function EmptyShop() {
       <p className="mt-2 text-sm text-zinc-500">Ajoute un velo dans le CRM puis publie-le pour alimenter la boutique.</p>
     </div>
   );
+}
+
+/** Le portail est servi par la page dédiée `/connexion`, qui ramène ici. */
+function CrmSignInRedirect() {
+  const location = useLocation();
+  const redirectUrl = `${location.pathname}${location.search}`;
+  return <Navigate to={`/connexion?redirect_url=${encodeURIComponent(redirectUrl)}`} replace />;
 }

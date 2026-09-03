@@ -38,6 +38,8 @@ if (missing.length > 0) {
           publishableKey={clerkKey}
           localization={frFR}
           appearance={{ variables: { colorPrimary: "#196b24" } }}
+          signInUrl="/connexion"
+          signUpUrl="/inscription"
         >
           <ConvexProviderWithClerk client={convex} useAuth={useAuth}>
             <BrowserRouter>
