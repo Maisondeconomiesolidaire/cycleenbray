@@ -10,7 +10,7 @@ import {
   type MutationCtx,
   type QueryCtx,
 } from "./_generated/server";
-import { v, type Infer } from "convex/values";
+import { ConvexError, v, type Infer } from "convex/values";
 import type { Doc, Id } from "./_generated/dataModel";
 import { api, internal } from "./_generated/api";
 import { accessAllows, livePhotosByClerkId, requireCrmPermission, requireUser } from "./lib";
@@ -976,6 +976,37 @@ export const listDepots = query({
   },
 });
 
+/**
+ * Dates minimales nécessaires au graphique de fréquentation. La période est
+ * bornée pour éviter qu'un écran analytique ne charge l'historique sans limite.
+ */
+export const attendanceStats = query({
+  args: { from: v.number(), to: v.number() },
+  handler: async (ctx, { from, to }) => {
+    await requireCrmPermission(ctx, "bennespro:depots", "read");
+    const maxRange = 370 * 24 * 60 * 60 * 1000;
+    if (!Number.isFinite(from) || !Number.isFinite(to) || to <= from || to - from > maxRange) {
+      throw new ConvexError("La période de fréquentation demandée est invalide.");
+    }
+
+    const [depots, companies] = await Promise.all([
+      ctx.db
+        .query("bpDepots")
+        .withIndex("by_createdAt", (q) => q.gte("createdAt", from).lt("createdAt", to))
+        .collect(),
+      ctx.db
+        .query("bpCompanies")
+        .withIndex("by_createdAt", (q) => q.gte("createdAt", from).lt("createdAt", to))
+        .collect(),
+    ]);
+
+    return {
+      depotTimestamps: depots.map((depot) => depot.createdAt),
+      companyTimestamps: companies.map((company) => company.createdAt),
+    };
+  },
+});
+
 export const getDepot = query({
   args: { depotId: v.id("bpDepots") },
   handler: async (ctx, { depotId }) => {
@@ -1061,8 +1092,8 @@ const WOOD_MATERIAL = "Bois";
 
 /** Prix par défaut : 32 centimes d'euro le kilo. */
 const DEFAULT_DIB_PRICE_CENTS_PER_KG = 32;
-/** Prix du bois : 17 centimes d'euro le kilo. */
-const WOOD_PRICE_CENTS_PER_KG = 17;
+/** Prix du bois par défaut : 17 centimes d'euro le kilo. */
+const DEFAULT_WOOD_PRICE_CENTS_PER_KG = 17;
 const DIB_VAT_RATE = 20;
 
 const SETTINGS_KEY = "bennespro";
@@ -1081,10 +1112,10 @@ function materialWeightKg(items: DepotItems, material: string): number {
 }
 
 async function buildBilling(ctx: QueryCtx | MutationCtx, items: DepotItems) {
-  const dibPriceCentsPerKg = await readDibPrice(ctx);
+  const [dibPriceCentsPerKg, woodPriceCentsPerKg] = await Promise.all([readDibPrice(ctx), readWoodPrice(ctx)]);
   const billableItems = ([
     { material: DIB_MATERIAL, weightKg: materialWeightKg(items, DIB_MATERIAL), priceCentsPerKg: dibPriceCentsPerKg },
-    { material: WOOD_MATERIAL, weightKg: materialWeightKg(items, WOOD_MATERIAL), priceCentsPerKg: WOOD_PRICE_CENTS_PER_KG },
+    { material: WOOD_MATERIAL, weightKg: materialWeightKg(items, WOOD_MATERIAL), priceCentsPerKg: woodPriceCentsPerKg },
   ] satisfies Array<{
     material: Infer<typeof bpMaterial>;
     weightKg: number;
@@ -1114,13 +1145,21 @@ async function readDibPrice(ctx: QueryCtx | MutationCtx): Promise<number> {
   return settings?.dibPriceCentsPerKg ?? DEFAULT_DIB_PRICE_CENTS_PER_KG;
 }
 
+async function readWoodPrice(ctx: QueryCtx | MutationCtx): Promise<number> {
+  const settings = await ctx.db
+    .query("bpSettings")
+    .withIndex("by_key", (q) => q.eq("key", SETTINGS_KEY))
+    .unique();
+  return settings?.woodPriceCentsPerKg ?? DEFAULT_WOOD_PRICE_CENTS_PER_KG;
+}
+
 export const getDibSettings = query({
   args: {},
   handler: async (ctx) => {
     await requireCrmPermission(ctx, "bennespro:depots", "read");
     return {
       priceCentsPerKg: await readDibPrice(ctx),
-      woodPriceCentsPerKg: WOOD_PRICE_CENTS_PER_KG,
+      woodPriceCentsPerKg: await readWoodPrice(ctx),
       stripeConfigured: Boolean(env.BENNESPRO_STRIPE_SECRET_KEY),
     };
   },
@@ -1153,6 +1192,25 @@ export const setDibPrice = mutation({
         updatedBy: identity.email ?? undefined,
       });
     }
+  },
+});
+
+/** Met à jour les tarifs des deux matières facturables (DIB et bois). */
+export const setMaterialPrices = mutation({
+  args: { dibPriceCentsPerKg: v.number(), woodPriceCentsPerKg: v.number() },
+  handler: async (ctx, { dibPriceCentsPerKg, woodPriceCentsPerKg }) => {
+    await requireCrmPermission(ctx, "bennespro:depots", "update");
+    const identity = await requireUser(ctx);
+    const prices = [dibPriceCentsPerKg, woodPriceCentsPerKg];
+    if (prices.some((price) => !Number.isFinite(price) || price <= 0 || price > 100000)) {
+      throw new Error("Tarif invalide.");
+    }
+    const dib = Math.round(dibPriceCentsPerKg * 100) / 100;
+    const wood = Math.round(woodPriceCentsPerKg * 100) / 100;
+    const settings = await ctx.db.query("bpSettings").withIndex("by_key", (q) => q.eq("key", SETTINGS_KEY)).unique();
+    const patch = { dibPriceCentsPerKg: dib, woodPriceCentsPerKg: wood, updatedAt: Date.now(), updatedBy: identity.email ?? undefined };
+    if (settings) await ctx.db.patch(settings._id, patch);
+    else await ctx.db.insert("bpSettings", { key: SETTINGS_KEY, ...patch });
   },
 });
 
@@ -1217,6 +1275,8 @@ export const saveInvoicePaymentStatus = internalMutation({
   handler: async (ctx, { depotId, paymentStatus, stripeInvoiceUrl, paidAt }) => {
     const depot = await ctx.db.get(depotId);
     if (!depot?.billing) return;
+    // Un statut posé à la main que Stripe ne sait pas refléter prime.
+    if (depot.billing.paymentStatusManual) return;
     await ctx.db.patch(depotId, {
       billing: {
         ...depot.billing,
@@ -1509,6 +1569,96 @@ export const refreshInvoiceStatus = action({
   },
 });
 
+/* ─── Statut de règlement posé à la main ──────────────────────────────────── */
+
+const manualPaymentStatus = v.union(
+  v.literal("open"),
+  v.literal("paid"),
+  v.literal("uncollectible"),
+  v.literal("void"),
+);
+
+export const saveManualPaymentStatus = internalMutation({
+  args: {
+    depotId: v.id("bpDepots"),
+    paymentStatus: manualPaymentStatus,
+    manual: v.boolean(),
+    updatedBy: v.optional(v.string()),
+  },
+  handler: async (ctx, { depotId, paymentStatus, manual, updatedBy }) => {
+    const depot = await ctx.db.get(depotId);
+    if (!depot?.billing) return;
+    const { paidAt, paymentStatusManual: _manual, ...rest } = depot.billing;
+    await ctx.db.patch(depotId, {
+      billing: {
+        ...rest,
+        paymentStatus,
+        // La date de règlement n'a de sens que pour une facture payée.
+        ...(paymentStatus === "paid" ? { paidAt: paidAt ?? Date.now() } : {}),
+        ...(manual ? { paymentStatusManual: true } : {}),
+        ...(updatedBy ? { paymentStatusUpdatedBy: updatedBy } : {}),
+        paymentStatusUpdatedAt: Date.now(),
+      },
+    });
+  },
+});
+
+/**
+ * Change le statut de règlement d'une facture (ex. réglée par virement ou
+ * chèque, hors Stripe). Stripe suit quand il le peut — payée hors ligne,
+ * annulée, irrécouvrable — pour que le lien de paiement ne reste pas ouvert.
+ * Sinon (ex. remettre « en attente » une facture payée), le statut est gardé
+ * localement et l'actualisation Stripe ne l'écrase plus.
+ */
+export const setInvoicePaymentStatus = action({
+  args: { depotId: v.id("bpDepots"), paymentStatus: manualPaymentStatus },
+  handler: async (ctx, { depotId, paymentStatus }): Promise<{ syncedWithStripe: boolean }> => {
+    const access: {
+      isAdmin?: boolean;
+      bootstrapMode?: boolean;
+      grants: Array<{ pageKey: string; actions: string[] }>;
+    } = await ctx.runQuery(api.permissions.myAccess, {});
+    if (!accessAllows(access, "bennespro:depots", "update")) {
+      throw new Error("Accès insuffisant.");
+    }
+    const identity = await ctx.auth.getUserIdentity();
+    const data: { depot: Doc<"bpDepots">; company: Doc<"bpCompanies"> | null } | null =
+      await ctx.runQuery(internal.bennespro.depotForBilling, { depotId });
+    const billing = data?.depot.billing;
+    if (!billing || billing.status !== "invoiced") {
+      throw new Error("Ce dépôt n'a pas de facture émise.");
+    }
+
+    let syncedWithStripe = false;
+    const secretKey = env.BENNESPRO_STRIPE_SECRET_KEY;
+    if (secretKey && billing.stripeInvoiceId) {
+      const invoiceId = billing.stripeInvoiceId;
+      const current = stripeStatus((await stripeGet(secretKey, `invoices/${invoiceId}`)).status);
+      const collectible = current === "open" || current === "uncollectible";
+      if (current === paymentStatus) {
+        syncedWithStripe = true;
+      } else if (collectible && paymentStatus === "paid") {
+        await stripeRequest(secretKey, `invoices/${invoiceId}/pay`, { paid_out_of_band: "true" });
+        syncedWithStripe = true;
+      } else if (collectible && paymentStatus === "void") {
+        await stripeRequest(secretKey, `invoices/${invoiceId}/void`, {});
+        syncedWithStripe = true;
+      } else if (current === "open" && paymentStatus === "uncollectible") {
+        await stripeRequest(secretKey, `invoices/${invoiceId}/mark_uncollectible`, {});
+        syncedWithStripe = true;
+      }
+    }
+
+    await ctx.runMutation(internal.bennespro.saveManualPaymentStatus, {
+      depotId,
+      paymentStatus,
+      manual: !syncedWithStripe,
+      updatedBy: identity?.name ?? identity?.email ?? undefined,
+    });
+    return { syncedWithStripe };
+  },
+});
+
 /* ─── Suppression définitive (permission « delete ») ──────────────────────── */
 
 async function requireAccess(
@@ -1659,6 +1809,9 @@ export const sendInvoiceEmail = action({
     const { depot, company } = data;
     if (!depot.billing?.stripeInvoiceUrl || !depot.billing.stripeInvoiceId) {
       throw new Error("Aucune facture Stripe pour ce dépôt.");
+    }
+    if (depot.billing.paymentStatus === "paid" || depot.billing.paymentStatus === "void") {
+      throw new Error("Cette facture est déjà réglée ou annulée.");
     }
     const email = company?.contactEmail?.trim();
     if (!email) {

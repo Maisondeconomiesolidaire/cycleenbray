@@ -14,6 +14,7 @@ import { AppSwitcher } from "./components/AppSwitcher";
 import { HelpButton } from "./components/HelpButton";
 import { useMutation, useQuery } from "convex/react";
 import {
+  ArrowLeft,
   Bike,
   CalendarDays,
   Camera,
@@ -35,6 +36,7 @@ import {
   SlidersHorizontal,
   Store,
   Trash2,
+  UserRound,
   XCircle,
 } from "lucide-react";
 import { Link, NavLink, Navigate, Outlet, Route, Routes, useLocation, useParams, useSearchParams } from "react-router-dom";
@@ -47,6 +49,7 @@ import { UpdateAvailableBanner } from "./components/UpdateAvailableBanner";
 import { ProfileSync } from "./components/ProfileSync";
 import { ConfirmRoot } from "./lib/confirm";
 import { PortalButton } from "./components/PortalButton";
+import { KioskUniverseNav } from "./components/KioskUniverseNav";
 
 type BikeStatus = "inactive" | "available" | "purchase_pending" | "sold";
 type PipelineStatus = "nouveau" | "validation" | "en_cours" | "gagnee" | "perdue";
@@ -283,6 +286,10 @@ export default function App() {
           Outils et BâtiRe — le portail occupe tout l'écran. */}
       <Route path="/connexion" element={<AuthPage />} />
       <Route path="/inscription" element={<AuthPage initialMode="signup" />} />
+
+      {/* Vitrine du dépôt : hors du shell boutique, sans compte. */}
+      <Route path="/kiosk" element={<Kiosk />} />
+      <Route path="/kiosk/velos/:id" element={<KioskBikeDetail />} />
 
       <Route element={<PublicLayout />}>
         <Route path="/" element={<Shop />} />
@@ -1031,6 +1038,246 @@ function BikeDetail() {
         </div>
       )}
     </>
+  );
+}
+
+/** Consigne de la vitrine : sur place, un vendeur conclut la vente. */
+const KIOSK_CALL_MESSAGE = "Intéressé(e) ? Faites appel à un vendeur";
+
+/**
+ * Vitrine physique (mode kiosque), calquée sur celle de BâtiRe : même barre
+ * d'univers, même mise en page, sans compte ni réservation. Seuls les vélos
+ * encore disponibles s'affichent : un vélo réservé n'a rien à faire sur
+ * l'écran d'entrée.
+ */
+function Kiosk() {
+  const [search, setSearch] = useState("");
+  const [category, setCategory] = useState("");
+  const [site, setSite] = useState<Site | "">("");
+  const bikes = useQuery(api.bikes.listPublic, {
+    category: category || undefined,
+    site: site || undefined,
+  });
+
+  const filteredBikes = useMemo(() => {
+    if (!bikes) return bikes;
+    const query = search.trim().toLowerCase();
+    const available = bikes.filter((bike) => bike.status === "available");
+    if (!query) return available;
+    return available.filter((bike) =>
+      [bike.title, bike.description, bike.category, bike.sizeLabel, bike.condition]
+        .filter(Boolean)
+        .some((value) => value!.toLowerCase().includes(query)),
+    );
+  }, [bikes, search]);
+
+  return (
+    <div className="relative min-h-screen bg-white">
+      <div className="pointer-events-none fixed inset-0 z-0 bg-[radial-gradient(circle_at_15%_10%,rgba(25,107,36,0.12),transparent_45%),radial-gradient(circle_at_85%_90%,rgba(255,119,0,0.1),transparent_45%)]" />
+
+      <div className="relative z-10">
+      <KioskUniverseNav current="velos" />
+      <section className="border-b border-black/5">
+        <div className="mx-auto w-full max-w-[92rem] px-5 py-8 sm:px-7 sm:py-10 lg:px-8">
+          <div className="flex flex-col items-center gap-6 text-center sm:flex-row sm:text-left">
+            <LogoMark className="h-28 w-28 shrink-0 sm:h-36 sm:w-36" />
+            <div>
+              <p className="text-xs font-semibold uppercase tracking-[0.18em] text-[#196b24]">
+                Univers Vélos
+              </p>
+              <h1 className="mt-2 text-3xl font-black tracking-tight text-zinc-950 sm:text-5xl">
+                Vélos de réemploi
+              </h1>
+              <p className="mt-3 text-base text-zinc-600 sm:text-lg">
+                Des vélos de seconde main, prêts à reprendre la route.
+              </p>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <nav className="mx-auto flex w-full max-w-[92rem] flex-wrap gap-2 px-5 pt-8 sm:px-7 lg:px-8">
+        <KioskChip label="Tout" active={!category} onClick={() => setCategory("")} />
+        {categories.map((item) => (
+          <KioskChip key={item} label={item} active={category === item} onClick={() => setCategory(item)} />
+        ))}
+      </nav>
+
+      <section className="mx-auto w-full max-w-[92rem] px-5 py-8 sm:px-7 lg:px-8">
+        <div className="mb-5 flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between sm:gap-4">
+          <div>
+            <p className="text-xs font-semibold uppercase tracking-[0.18em] text-zinc-500">Catalogue</p>
+            <h2 className="mt-1 text-2xl font-bold tracking-tight text-zinc-950">{category || "Tous les vélos"}</h2>
+            <p className="mt-1 text-sm text-zinc-600">
+              {filteredBikes?.length ?? 0} vélo{(filteredBikes?.length ?? 0) > 1 ? "s" : ""}
+            </p>
+          </div>
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="text-xs font-semibold uppercase tracking-[0.14em] text-zinc-500">Lieu</span>
+            <div className="inline-flex flex-wrap rounded-full border border-white/40 bg-white/60 p-1 shadow-sm">
+              {[{ value: "" as const, label: "Tous" }, ...sites].map((option) => (
+                <button
+                  key={option.value}
+                  type="button"
+                  onClick={() => setSite(option.value)}
+                  className={cn(
+                    "rounded-full px-3.5 py-1.5 text-sm font-semibold transition-colors",
+                    site === option.value ? "bg-[#196b24] text-white" : "text-zinc-600 hover:text-zinc-900",
+                  )}
+                >
+                  {option.label}
+                </button>
+              ))}
+            </div>
+          </div>
+        </div>
+
+        <div className="relative mb-5">
+          <Search className="pointer-events-none absolute left-4 top-1/2 h-5 w-5 -translate-y-1/2 text-zinc-400" />
+          <input
+            value={search}
+            onChange={(event) => setSearch(event.target.value)}
+            placeholder="Rechercher un vélo…"
+            className="h-14 w-full rounded-2xl border border-white/60 bg-white/80 pl-12 pr-12 text-base text-zinc-900 shadow-sm outline-none backdrop-blur transition focus:border-zinc-300"
+          />
+          {search && (
+            <button
+              type="button"
+              onClick={() => setSearch("")}
+              className="absolute right-3 top-1/2 -translate-y-1/2 rounded-full p-2 text-zinc-400 hover:bg-zinc-100"
+              aria-label="Effacer la recherche"
+            >
+              <XCircle className="h-5 w-5" />
+            </button>
+          )}
+        </div>
+
+        {filteredBikes === undefined ? (
+          <LoadingState />
+        ) : filteredBikes.length === 0 ? (
+          <div className="rounded-[32px] border border-zinc-200 bg-white/70 p-10 text-center">
+            <Bike className="mx-auto h-10 w-10 text-zinc-400" />
+            <h3 className="mt-4 text-lg font-semibold">Aucun vélo ne correspond</h3>
+            <p className="mt-2 text-sm text-zinc-500">Essayez une autre recherche ou un autre filtre.</p>
+          </div>
+        ) : (
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-5">
+            {filteredBikes.map((bike) => (
+              <KioskBikeCard key={bike._id} bike={bike} />
+            ))}
+          </div>
+        )}
+      </section>
+      </div>
+    </div>
+  );
+}
+
+function KioskChip({ label, active, onClick }: { label: string; active: boolean; onClick: () => void }) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={cn(
+        "whitespace-nowrap rounded-full px-4 py-2 text-sm font-semibold transition",
+        active ? "bg-white/84 text-zinc-950 shadow-sm" : "text-zinc-700 hover:bg-white/70 hover:text-zinc-950",
+      )}
+    >
+      {label}
+    </button>
+  );
+}
+
+function KioskCallVendor({ large = false }: { large?: boolean }) {
+  return (
+    <div className={cn("flex items-center gap-3 rounded-2xl", large ? "gap-4 border border-[#196b24]/20 bg-[#196b24]/5 p-4" : "bg-zinc-50 p-3")}>
+      <span className={cn("flex shrink-0 items-center justify-center bg-white text-[#196b24]", large ? "h-12 w-12 rounded-xl" : "h-9 w-9 rounded-full")}>
+        <UserRound className={large ? "h-6 w-6" : "h-5 w-5"} />
+      </span>
+      <span className={cn("min-w-0 font-bold text-zinc-800", large ? "text-lg leading-7" : "text-sm leading-5")}>
+        {KIOSK_CALL_MESSAGE}
+      </span>
+    </div>
+  );
+}
+
+function KioskBikeCard({ bike }: { bike: BikeWithPhotos }) {
+  return (
+    <Link to={`/kiosk/velos/${bike._id}`} className="group flex flex-col overflow-hidden rounded-2xl border border-zinc-200 bg-white shadow-sm transition hover:-translate-y-0.5 hover:shadow-xl">
+      <div className="relative aspect-[4/3] overflow-hidden bg-zinc-100">
+        <img src={bikeImage(bike)} alt={bike.title} loading="lazy" decoding="async" className="h-full w-full object-cover transition duration-500 group-hover:scale-105" />
+      </div>
+      <div className="flex flex-1 flex-col p-4">
+        <p className="text-xs font-semibold uppercase tracking-[0.16em] text-[#196b24]">{bike.category} · {bike.site === "60" ? "Recyclerie 60" : "Recyclerie 76"}</p>
+        <h3 className="mt-1 text-lg font-semibold text-zinc-950">{shopBikeTitle(bike)}</h3>
+        <div className="mt-3 flex flex-wrap gap-2 text-xs text-zinc-600">
+          {[bike.sizeLabel, bike.condition].filter(Boolean).map((item) => (
+            <span key={item} className="rounded-md bg-zinc-100 px-2 py-1">{item}</span>
+          ))}
+        </div>
+        <p className="mb-3 mt-auto pt-4 text-xl font-semibold">{bike.useMode === "rental" ? "Location" : euro(bike.price)}</p>
+        <KioskCallVendor />
+      </div>
+    </Link>
+  );
+}
+
+/** Fiche vélo en vitrine : la boutique, sans réservation — un vendeur conclut. */
+function KioskBikeDetail() {
+  const { id } = useParams();
+  const bike = useQuery(api.bikes.getPublic, id ? { id: id as Id<"bikes"> } : "skip");
+  const [activeImage, setActiveImage] = useState(0);
+  if (bike === undefined) return <LoadingState />;
+  if (!bike) return <Navigate to="/kiosk" replace />;
+  const galleryImages = bike.photoUrls.length ? bike.photoUrls : fallbackImages;
+  const selectedImage = galleryImages[activeImage] ?? galleryImages[0];
+
+  return (
+    <div className="min-h-screen bg-white">
+      <KioskUniverseNav current="velos" />
+      <div className="mx-auto max-w-[92rem] px-5 pt-5 sm:px-7 lg:px-8">
+        <Link
+          to="/kiosk"
+          className="inline-flex items-center gap-2 rounded-full border border-zinc-200 bg-white px-4 py-2 text-sm font-medium text-zinc-600 shadow-sm transition hover:text-zinc-900"
+        >
+          <ArrowLeft className="h-4 w-4" />
+          Retour à la vitrine
+        </Link>
+      </div>
+      <main className="mx-auto grid max-w-[92rem] gap-8 px-5 py-8 sm:px-7 lg:grid-cols-[1.1fr_0.9fr] lg:px-8">
+        <div className="grid gap-3">
+          <div className="overflow-hidden rounded-lg bg-zinc-100">
+            <img src={selectedImage} alt={shopBikeTitle(bike)} className="aspect-[4/3] w-full object-cover" />
+          </div>
+          {galleryImages.length > 1 && (
+            <div className="grid grid-cols-4 gap-3">
+              {galleryImages.slice(0, 8).map((url, index) => (
+                <button key={`${url}-${index}`} type="button" onClick={() => setActiveImage(index)} className={cn("overflow-hidden rounded-lg border bg-zinc-100", activeImage === index ? "border-[#196b24] ring-2 ring-[#196b24]/20" : "border-transparent")}>
+                  <img src={url} alt="" loading="lazy" decoding="async" className="aspect-square w-full object-cover" />
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+        <section>
+          <p className="text-sm font-semibold uppercase tracking-[0.16em] text-[#196b24]">{bike.site === "60" ? "Recyclerie 60" : "Recyclerie 76"}</p>
+          <h1 className="mt-2 text-4xl font-semibold tracking-normal">{shopBikeTitle(bike)}</h1>
+          <p className="mt-4 text-3xl font-semibold">{bike.useMode === "rental" ? "Location" : euro(bike.price)}</p>
+          {bike.status === "available" && (
+            <div className="mt-6">
+              <KioskCallVendor large />
+            </div>
+          )}
+          {bike.description && <p className="mt-6 leading-8 text-zinc-700">{bike.description}</p>}
+          <div className="mt-8 grid grid-cols-2 gap-3">
+            <Spec label="Categorie" value={bike.category} />
+            <Spec label="Profil" value={bike.sizeLabel} />
+            <Spec label="Etat" value={bike.condition} />
+            <Spec label="Disponibilité" value={bike.useMode === "rental" ? "Location" : "Achat"} />
+          </div>
+        </section>
+      </main>
+    </div>
   );
 }
 
