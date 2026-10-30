@@ -1086,7 +1086,7 @@ function Kiosk() {
                 Univers Vélos
               </p>
               <h1 className="mt-2 text-3xl font-black tracking-tight text-zinc-950 sm:text-5xl">
-                Vélos de réemploi
+                Découvrez nos vélos
               </h1>
               <p className="mt-3 text-base text-zinc-600 sm:text-lg">
                 Des vélos de seconde main, prêts à reprendre la route.
